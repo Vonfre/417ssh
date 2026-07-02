@@ -6,9 +6,8 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Release tag, for example v0.2.4"
+        description: "Release tag, for example v0.2.6"
         required: true
-        default: "v0.2.4"
       prerelease:
         description: "Mark this release as prerelease"
         required: true
@@ -57,7 +56,7 @@ jobs:
           TAG="${TAG#refs/tags/}"
           VERSION="${TAG#v}"
           if [[ -z "$VERSION" || "$VERSION" == "$TAG" ]]; then
-            echo "Release tag must look like v0.2.4, got: $TAG" >&2
+            echo "Release tag must look like v<version>, got: $TAG" >&2
             exit 1
           fi
           echo "$VERSION" > macos/VERSION
@@ -103,7 +102,7 @@ jobs:
           $tag = $tag -replace '^refs/tags/', ''
           $version = $tag.TrimStart('v')
           if ([string]::IsNullOrWhiteSpace($version) -or $version -eq $tag) {
-            throw "Release tag must look like v0.2.4, got: $tag"
+            throw "Release tag must look like v<version>, got: $tag"
           }
           Set-Content -Path windows\VERSION -Value $version -Encoding UTF8
           "tag=$tag" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
