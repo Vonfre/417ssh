@@ -22,10 +22,20 @@ permissions:
 jobs:
   macos-dmg:
     name: Build macOS DMG
-    runs-on: macos-14
+    runs-on: macos-15
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Select Xcode
+        shell: bash
+        run: |
+          sudo xcode-select -s /Applications/Xcode_16.4.app 2>/dev/null \
+            || sudo xcode-select -s /Applications/Xcode_16.3.app 2>/dev/null \
+            || sudo xcode-select -s /Applications/Xcode_16.2.app 2>/dev/null \
+            || sudo xcode-select -s /Applications/Xcode.app
+          xcodebuild -version
+          swift --version
 
       - name: Resolve version
         id: version
@@ -40,6 +50,7 @@ jobs:
         shell: bash
         run: |
           cd macos
+          swift package resolve
           VERSION="${{ steps.version.outputs.version }}" ./scripts/build_dmg.sh
 
       - name: Upload DMG artifact
