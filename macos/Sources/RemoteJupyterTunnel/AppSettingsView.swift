@@ -61,7 +61,7 @@ struct AppSettingsView: View {
                     }
                     .disabled(isBusy)
 
-                    Button("下载并打开安装包") {
+                    Button("下载并打开更新包") {
                         Task {
                             await updateManager.downloadAndOpenInstaller()
                         }
@@ -74,7 +74,7 @@ struct AppSettingsView: View {
                 }
             }
 
-            Text("macOS 版会下载 GitHub Release 中的 .dmg 并打开它；如果要做到完全静默替换运行中的应用，后续需要接入签名、notarization 和 Sparkle。")
+            Text("macOS 版会下载 GitHub Release 中的 .app.zip 并打开它；解压后可把 417ssh.app 拖到 Applications。若要完全静默替换，后续需要接入签名、notarization 和 Sparkle。")
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)

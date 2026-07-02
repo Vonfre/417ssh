@@ -8,12 +8,25 @@
 - 提供简易内置 SSH 终端，也可以打开 Windows 原生 `cmd.exe` 里的 `ssh`。
 - 浏览远程目录、返回上级、筛选、拖拽上传、按钮上传文件/文件夹、下载文件/文件夹。
 
-## 下载
+## 下载使用
 
-- [下载最新版 Windows MSI](https://github.com/Vonfre/417ssh/releases/latest/download/417ssh-0.2.4-win.msi)
-- [打开 GitHub Releases 下载页](https://github.com/Vonfre/417ssh/releases)
+打开 [GitHub Releases](https://github.com/Vonfre/417ssh/releases)，下载：
 
-## 运行
+```text
+417ssh-<版本>-win-portable.zip
+```
+
+解压后进入 `417ssh` 文件夹，双击 `417ssh.exe` 运行。portable 版本不需要用户安装 Python。
+
+配置保存在：
+
+```text
+%APPDATA%\417ssh\profiles.json
+```
+
+如果 Windows SmartScreen 提示未知发布者，选择 `更多信息` 后继续运行。正式分发时建议后续补代码签名。
+
+## 源码运行
 
 先安装 Windows 版 Python 3.10+，然后双击：
 
@@ -21,19 +34,13 @@
 run_windows.bat
 ```
 
-脚本会安装运行依赖并启动程序。配置保存在：
-
-```text
-%APPDATA%\417ssh\profiles.json
-```
+脚本会安装运行依赖并启动程序。
 
 ## 打包 exe
 
-推荐使用仓库根目录的 GitHub Actions workflow `Build Release Installers` 生成并上传 MSI。
+推荐使用仓库根目录的 GitHub Actions workflow `Build Release Packages` 生成并上传 portable zip。
 
 本地调试 exe：
-
-在 PowerShell 里运行：
 
 ```powershell
 .\build_windows.ps1
@@ -45,24 +52,16 @@ run_windows.bat
 dist\417ssh.exe
 ```
 
-## 打包 MSI
-
-先安装 WiX Toolset v4：
+## 打包 portable zip
 
 ```powershell
-winget install WiXToolset.WiXToolset
-```
-
-然后运行：
-
-```powershell
-.\build_msi.ps1
+.\build_portable.ps1
 ```
 
 生成文件：
 
 ```text
-dist\417ssh-0.2.4-win.msi
+dist\417ssh-<版本>-win-portable.zip
 ```
 
 ## 说明
@@ -72,5 +71,5 @@ dist\417ssh-0.2.4-win.msi
 - “原生终端”调用 Windows 自带 OpenSSH 的 `ssh` 命令；如果用密码登录，需要在弹出的终端里手动输入密码。
 - 如果要使用密钥，请在配置里填写 Windows 路径，例如 `C:\Users\you\.ssh\id_ed25519`。
 - `src\417ssh_windows.py` 是早期 Tkinter 版本，默认入口已经切换到更接近 macOS UI 的 `src\417ssh_qt.py`。
-- 设置里可以检查 GitHub Releases 更新；检测到新版本后会下载 `.msi` 并启动安装器。
-- 发布新版本时，建议 release asset 使用 `417ssh-<版本>-win.msi` 命名。
+- 设置里可以检查 GitHub Releases 更新；检测到新版本后会下载 portable `.zip` 并打开。
+- 发布新版本时，release asset 使用 `417ssh-<版本>-win-portable.zip` 命名。

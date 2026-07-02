@@ -1,4 +1,4 @@
-# 417ssh
+# 417ssh macOS
 
 一个原生 macOS 应用，用来保存多组 SSH 配置，并把 Jupyter 隧道、SSH 终端和 SFTP 文件传输分成清晰的工作区。
 
@@ -14,14 +14,19 @@ ssh -CNgv -L 8003:node12:8003 -J zhanghuan@www.chenlianfu.com:52922 zhanghuan@no
 http://127.0.0.1:8003/lab/tree/work
 ```
 
-## 下载
+## 下载使用
 
-- [下载最新版 macOS DMG](https://github.com/Vonfre/417ssh/releases/latest/download/417ssh-0.2.4-mac.dmg)
-- [打开 GitHub Releases 下载页](https://github.com/Vonfre/417ssh/releases)
+打开 [GitHub Releases](https://github.com/Vonfre/417ssh/releases)，下载：
+
+```text
+417ssh-<版本>-mac-app.zip
+```
+
+解压后得到 `417ssh.app`。可以直接运行，也可以拖到 `Applications`。如果 macOS 第一次阻止打开，在 Finder 里右键 `417ssh.app`，选择 `打开`。
 
 ## 构建
 
-推荐使用仓库根目录的 GitHub Actions workflow `Build Release Installers` 生成并上传 DMG。
+推荐使用仓库根目录的 GitHub Actions workflow `Build Release Packages` 生成并上传 app zip。
 
 本地构建：
 
@@ -35,16 +40,16 @@ http://127.0.0.1:8003/lab/tree/work
 build/417ssh.app
 ```
 
-打包 DMG：
+打包 app zip：
 
 ```bash
-./scripts/build_dmg.sh
+./scripts/build_zip.sh
 ```
 
 生成：
 
 ```text
-build/417ssh-0.2.4-mac.dmg
+build/417ssh-<版本>-mac-app.zip
 ```
 
 构建脚本会把 `logo.jpg` 复制进应用，并生成 macOS 需要的 `AppIcon.icns`。
@@ -69,4 +74,4 @@ build/417ssh-0.2.4-mac.dmg
 - 应用退出时会自动关闭本次由应用创建的 Jupyter 隧道、SSH 终端和 SFTP 操作。
 - 已经在终端或旧版本应用里启动的隧道不会被自动接管；端口占用时可以使用应用里的关闭占用重连按钮。
 - 如果密码为空，应用会使用密钥或 `ssh-agent`。
-- 设置里可以检查 GitHub Releases 更新；检测到新版本后会下载并打开 `.dmg`。
+- 设置里可以检查 GitHub Releases 更新；检测到新版本后会下载并打开 `.app.zip`。

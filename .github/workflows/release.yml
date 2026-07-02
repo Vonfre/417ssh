@@ -1,4 +1,4 @@
-name: Build Release Installers
+name: Build Release Packages
 
 run-name: Release ${{ inputs.tag || github.ref_name }}
 
@@ -22,8 +22,8 @@ permissions:
   contents: write
 
 jobs:
-  macos-dmg:
-    name: Build macOS DMG
+  macos-app-zip:
+    name: Build macOS app ZIP
     runs-on: macos-latest
     timeout-minutes: 45
     steps:
@@ -64,26 +64,26 @@ jobs:
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
 
-      - name: Build DMG
+      - name: Build app ZIP
         shell: bash
         run: |
           set -euo pipefail
           cd macos
-          chmod +x scripts/build_app.sh scripts/build_dmg.sh
+          chmod +x scripts/build_app.sh scripts/build_zip.sh
           swift package resolve
-          VERSION="${{ steps.version.outputs.version }}" ./scripts/build_dmg.sh
-          test -f "build/417ssh-${{ steps.version.outputs.version }}-mac.dmg"
-          ls -lh "build/417ssh-${{ steps.version.outputs.version }}-mac.dmg"
+          VERSION="${{ steps.version.outputs.version }}" ./scripts/build_zip.sh
+          test -f "build/417ssh-${{ steps.version.outputs.version }}-mac-app.zip"
+          ls -lh "build/417ssh-${{ steps.version.outputs.version }}-mac-app.zip"
 
-      - name: Upload DMG artifact
+      - name: Upload macOS ZIP artifact
         uses: actions/upload-artifact@v4
         with:
-          name: macos-dmg
-          path: macos/build/417ssh-${{ steps.version.outputs.version }}-mac.dmg
+          name: macos-app-zip
+          path: macos/build/417ssh-${{ steps.version.outputs.version }}-mac-app.zip
           if-no-files-found: error
 
-  windows-msi:
-    name: Build Windows MSI
+  windows-portable-zip:
+    name: Build Windows portable ZIP
     runs-on: windows-latest
     timeout-minutes: 60
     steps:
@@ -118,38 +118,29 @@ jobs:
             windows/requirements.txt
             windows/requirements-build.txt
 
-      - name: Install WiX
-        shell: pwsh
-        run: |
-          dotnet tool install --global wix
-          $toolsPath = "$env:USERPROFILE\.dotnet\tools"
-          $toolsPath | Out-File -FilePath $env:GITHUB_PATH -Append
-          $env:PATH = "$toolsPath;$env:PATH"
-          wix --version
-
-      - name: Build MSI
+      - name: Build portable ZIP
         shell: pwsh
         run: |
           cd windows
           $env:VERSION = "${{ steps.version.outputs.version }}"
-          .\build_msi.ps1
-          if (-not (Test-Path "dist\417ssh-${{ steps.version.outputs.version }}-win.msi")) {
-            throw "MSI was not created"
+          .\build_portable.ps1
+          if (-not (Test-Path "dist\417ssh-${{ steps.version.outputs.version }}-win-portable.zip")) {
+            throw "Windows portable ZIP was not created"
           }
-          Get-Item "dist\417ssh-${{ steps.version.outputs.version }}-win.msi" | Format-List FullName,Length
+          Get-Item "dist\417ssh-${{ steps.version.outputs.version }}-win-portable.zip" | Format-List FullName,Length
 
-      - name: Upload MSI artifact
+      - name: Upload Windows ZIP artifact
         uses: actions/upload-artifact@v4
         with:
-          name: windows-msi
-          path: windows/dist/417ssh-${{ steps.version.outputs.version }}-win.msi
+          name: windows-portable-zip
+          path: windows/dist/417ssh-${{ steps.version.outputs.version }}-win-portable.zip
           if-no-files-found: error
 
   github-release:
     name: Publish GitHub Release
     needs:
-      - macos-dmg
-      - windows-msi
+      - macos-app-zip
+      - windows-portable-zip
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -183,8 +174,8 @@ jobs:
         run: |
           set -euo pipefail
           ls -lh release-assets
-          test -f "release-assets/417ssh-${{ steps.version.outputs.version }}-mac.dmg"
-          test -f "release-assets/417ssh-${{ steps.version.outputs.version }}-win.msi"
+          test -f "release-assets/417ssh-${{ steps.version.outputs.version }}-mac-app.zip"
+          test -f "release-assets/417ssh-${{ steps.version.outputs.version }}-win-portable.zip"
           shasum -a 256 release-assets/* > release-assets/SHA256SUMS.txt
           cat release-assets/SHA256SUMS.txt
 
@@ -195,18 +186,19 @@ jobs:
           target_commitish: ${{ github.sha }}
           name: 417ssh ${{ steps.version.outputs.version }}
           body: |
-            417ssh ${{ steps.version.outputs.version }} installers.
+            417ssh ${{ steps.version.outputs.version }} portable packages.
 
             Downloads:
-            - macOS: `417ssh-${{ steps.version.outputs.version }}-mac.dmg`
-            - Windows: `417ssh-${{ steps.version.outputs.version }}-win.msi`
+            - macOS: `417ssh-${{ steps.version.outputs.version }}-mac-app.zip`
+            - Windows: `417ssh-${{ steps.version.outputs.version }}-win-portable.zip`
 
-            If macOS blocks the app on first launch, open it once from Finder with right click -> Open.
+            macOS: unzip, drag `417ssh.app` to Applications if desired, then open it once from Finder with right click -> Open if Gatekeeper blocks it.
+            Windows: unzip the folder and run `417ssh.exe`.
           prerelease: ${{ steps.version.outputs.prerelease }}
           make_latest: true
           overwrite_files: true
           fail_on_unmatched_files: true
           files: |
-            release-assets/417ssh-${{ steps.version.outputs.version }}-mac.dmg
-            release-assets/417ssh-${{ steps.version.outputs.version }}-win.msi
+            release-assets/417ssh-${{ steps.version.outputs.version }}-mac-app.zip
+            release-assets/417ssh-${{ steps.version.outputs.version }}-win-portable.zip
             release-assets/SHA256SUMS.txt

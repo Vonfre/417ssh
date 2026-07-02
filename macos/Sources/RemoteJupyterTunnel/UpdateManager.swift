@@ -23,9 +23,9 @@ final class UpdateManager: ObservableObject {
             case .updateAvailable(let version):
                 return "发现新版本 \(version)"
             case .downloading:
-                return "正在下载安装包"
+                return "正在下载更新包"
             case .downloaded:
-                return "安装包已打开"
+                return "更新包已打开"
             case .failed(let message):
                 return "更新失败：\(message)"
             }
@@ -79,9 +79,9 @@ final class UpdateManager: ObservableObject {
             return await downloadAndOpenInstaller()
         }
 
-        guard let asset = latestRelease.macInstallerAsset else {
+        guard let asset = latestRelease.macUpdateAsset else {
             NSWorkspace.shared.open(AppVersion.releasesURL)
-            status = .failed("这个 release 里没有 macOS .dmg 安装包")
+            status = .failed("这个 release 里没有 macOS .app.zip 更新包")
             return
         }
 
@@ -193,11 +193,19 @@ struct GitHubRelease: Decodable {
         tagName.trimmingCharacters(in: CharacterSet(charactersIn: "vV "))
     }
 
-    var macInstallerAsset: Asset? {
+    var macUpdateAsset: Asset? {
         assets.first { asset in
             let name = asset.name.lowercased()
-            return name.hasSuffix(".dmg") && (name.contains("mac") || name.contains("darwin") || name.contains("417ssh"))
-        } ?? assets.first { $0.name.lowercased().hasSuffix(".dmg") }
+            return name.hasSuffix(".zip")
+                && (name.contains("mac") || name.contains("darwin") || name.contains("app"))
+                && name.contains("417ssh")
+        } ?? assets.first { asset in
+            let name = asset.name.lowercased()
+            return name.hasSuffix(".zip") && (name.contains("mac") || name.contains("darwin"))
+        } ?? assets.first { asset in
+            let name = asset.name.lowercased()
+            return name.hasSuffix(".zip") && name.contains("417ssh")
+        }
     }
 }
 
@@ -210,7 +218,7 @@ private enum UpdateError: LocalizedError {
         case .httpStatus(let status):
             return "GitHub 返回 HTTP \(status)"
         case .invalidAssetURL:
-            return "安装包下载地址无效"
+            return "更新包下载地址无效"
         }
     }
 }

@@ -151,22 +151,20 @@ def release_version(release: dict) -> str:
 
 def windows_release_asset(release: dict) -> dict | None:
     assets = release.get("assets") or []
-    msi_assets = [
+    zip_assets = [
         asset for asset in assets
-        if str(asset.get("name", "")).lower().endswith(".msi")
+        if str(asset.get("name", "")).lower().endswith(".zip")
     ]
-    for asset in msi_assets:
+    for asset in zip_assets:
+        name = str(asset.get("name", "")).lower()
+        if ("win" in name or "windows" in name) and ("portable" in name or "417ssh" in name):
+            return asset
+    for asset in zip_assets:
         name = str(asset.get("name", "")).lower()
         if "win" in name or "windows" in name or "417ssh" in name:
             return asset
-    if msi_assets:
-        return msi_assets[0]
 
-    exe_assets = [
-        asset for asset in assets
-        if str(asset.get("name", "")).lower().endswith(".exe")
-    ]
-    return exe_assets[0] if exe_assets else None
+    return None
 
 
 def fetch_latest_release() -> dict:
@@ -188,7 +186,7 @@ def downloads_dir() -> Path:
 
 
 def download_release_asset(asset: dict) -> Path:
-    name = str(asset.get("name") or "417ssh-update.msi")
+    name = str(asset.get("name") or "417ssh-update.zip")
     url = str(asset.get("browser_download_url") or "")
     if not url:
         raise RuntimeError("Release asset 缺少下载地址。")
@@ -549,7 +547,7 @@ class AppSettingsDialog(QDialog):
         self.check_button.clicked.connect(self.check_requested.emit)
         button_row.addWidget(self.check_button)
 
-        self.install_button = QPushButton("下载并启动安装器")
+        self.install_button = QPushButton("下载并打开更新包")
         self.install_button.clicked.connect(self.install_requested.emit)
         button_row.addWidget(self.install_button)
 
@@ -559,7 +557,7 @@ class AppSettingsDialog(QDialog):
         button_row.addStretch(1)
         layout.addLayout(button_row)
 
-        tip = QLabel("Windows 版会下载 GitHub Release 中的 .msi 并启动安装器；运行中的应用需要关闭后再完成替换。")
+        tip = QLabel("Windows 版会下载 GitHub Release 中的 portable .zip；解压后运行新的 417ssh.exe。")
         tip.setWordWrap(True)
         tip.setStyleSheet("color: #6b7280; font-size: 12px;")
         layout.addWidget(tip)
@@ -581,8 +579,8 @@ class AppSettingsDialog(QDialog):
         if latest_release:
             title = latest_release.get("name") or latest_release.get("tag_name") or "417ssh 更新"
             body = latest_release.get("body") or "这个版本没有填写 release notes。"
-            asset_name = update_asset.get("name") if update_asset else "未找到 Windows .msi 安装包"
-            self.release_notes.setPlainText(f"{title}\n\n安装包：{asset_name}\n\n{body}")
+            asset_name = update_asset.get("name") if update_asset else "未找到 Windows portable .zip 更新包"
+            self.release_notes.setPlainText(f"{title}\n\n更新包：{asset_name}\n\n{body}")
         else:
             self.release_notes.setPlainText("还没有检查更新。")
 
@@ -1391,7 +1389,7 @@ class MainWindow(QMainWindow):
 
         if version and is_version_newer(version, CURRENT_VERSION):
             if self.update_asset is None:
-                self.update_status = f"发现新版本 {version}，但 release 里没有 Windows .msi 安装包"
+                self.update_status = f"发现新版本 {version}，但 release 里没有 Windows portable .zip 更新包"
             else:
                 self.update_status = f"发现新版本 {version}"
         else:
@@ -1415,7 +1413,7 @@ class MainWindow(QMainWindow):
             webbrowser.open(RELEASES_URL)
             return
 
-        self.update_status = "正在下载安装包"
+        self.update_status = "正在下载更新包"
         self.update_dialog_refresh()
 
         def work() -> None:
@@ -1428,18 +1426,15 @@ class MainWindow(QMainWindow):
         threading.Thread(target=work, name="UpdateDownload", daemon=True).start()
 
     def handle_update_downloaded(self, path_text: str) -> None:
-        installer_path = Path(path_text)
-        self.update_status = f"安装包已下载：{installer_path}"
+        package_path = Path(path_text)
+        self.update_status = f"更新包已下载：{package_path}"
         self.update_dialog_refresh()
 
         try:
-            if sys.platform == "win32" and installer_path.suffix.lower() == ".msi":
-                subprocess.Popen(["msiexec", "/i", str(installer_path)])
-            else:
-                os.startfile(str(installer_path)) if sys.platform == "win32" else webbrowser.open(str(installer_path))
-            QMessageBox.information(self, APP_NAME, "安装器已启动。请关闭当前 417ssh 后继续安装。")
+            os.startfile(str(package_path)) if sys.platform == "win32" else webbrowser.open(str(package_path))
+            QMessageBox.information(self, APP_NAME, "更新包已打开。请解压后运行新的 417ssh.exe。")
         except Exception as exc:
-            QMessageBox.critical(self, APP_NAME, f"启动安装器失败：{exc}")
+            QMessageBox.critical(self, APP_NAME, f"打开更新包失败：{exc}")
 
     def handle_update_status(self, status: str) -> None:
         self.update_status = status
