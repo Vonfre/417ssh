@@ -48,7 +48,11 @@ jobs:
       - name: Install icon build dependency
         shell: bash
         run: |
-          python3 -m pip install --user Pillow
+          set -euo pipefail
+          python3 -m venv "$GITHUB_WORKSPACE/macos/.venv-icon"
+          "$GITHUB_WORKSPACE/macos/.venv-icon/bin/python" -m pip install --upgrade pip
+          "$GITHUB_WORKSPACE/macos/.venv-icon/bin/python" -m pip install Pillow
+          echo "$GITHUB_WORKSPACE/macos/.venv-icon/bin" >> "$GITHUB_PATH"
 
       - name: Resolve version
         id: version
