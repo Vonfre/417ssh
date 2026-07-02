@@ -21,6 +21,18 @@ windows/    Windows 版本，Python + PySide6/Qt + Paramiko
 macos/build/417ssh.app
 ```
 
+打包 DMG：
+
+```bash
+./scripts/build_dmg.sh
+```
+
+生成：
+
+```text
+macos/build/417ssh-0.2.0-mac.dmg
+```
+
 详细说明见 `macos/README.md`。
 
 ## Windows
@@ -42,5 +54,19 @@ run_windows.bat
 ```text
 windows/dist/417ssh.exe
 ```
+
+打包 MSI：
+
+```powershell
+.\build_msi.ps1
+```
+
+生成：
+
+```text
+windows/dist/417ssh-0.2.0-win.msi
+```
+
+自动更新会读取 GitHub Releases。发布新版本时，把 macOS 的 `.dmg` 和 Windows 的 `.msi` 上传到 release assets。
 
 详细说明见 `windows/README.md`。

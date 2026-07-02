@@ -160,6 +160,13 @@ struct ContentView: View {
                 }
                 .disabled(store.profiles.isEmpty)
                 .help("删除当前配置")
+
+                Button {
+                    NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
+                } label: {
+                    Label("设置", systemImage: "gearshape")
+                }
+                .help("打开设置")
             }
             .labelStyle(.iconOnly)
             .buttonStyle(.bordered)

@@ -26,6 +26,18 @@ http://127.0.0.1:8003/lab/tree/work
 build/417ssh.app
 ```
 
+打包 DMG：
+
+```bash
+./scripts/build_dmg.sh
+```
+
+生成：
+
+```text
+build/417ssh-0.2.0-mac.dmg
+```
+
 构建脚本会把 `logo.jpg` 复制进应用，并生成 macOS 需要的 `AppIcon.icns`。
 
 ## 使用
@@ -48,3 +60,4 @@ build/417ssh.app
 - 应用退出时会自动关闭本次由应用创建的 Jupyter 隧道、SSH 终端和 SFTP 操作。
 - 已经在终端或旧版本应用里启动的隧道不会被自动接管；端口占用时可以使用应用里的关闭占用重连按钮。
 - 如果密码为空，应用会使用密钥或 `ssh-agent`。
+- 设置里可以检查 GitHub Releases 更新；检测到新版本后会下载并打开 `.dmg`。

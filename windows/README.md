@@ -36,6 +36,26 @@ run_windows.bat
 dist\417ssh.exe
 ```
 
+## 打包 MSI
+
+先安装 WiX Toolset v4：
+
+```powershell
+winget install WiXToolset.WiXToolset
+```
+
+然后运行：
+
+```powershell
+.\build_msi.ps1
+```
+
+生成文件：
+
+```text
+dist\417ssh-0.2.0-win.msi
+```
+
 ## 说明
 
 - Windows 版使用 Paramiko 连接 SSH，所以内置 Jupyter 隧道、内置终端和 SFTP 都支持密码登录。
@@ -43,3 +63,5 @@ dist\417ssh.exe
 - “原生终端”调用 Windows 自带 OpenSSH 的 `ssh` 命令；如果用密码登录，需要在弹出的终端里手动输入密码。
 - 如果要使用密钥，请在配置里填写 Windows 路径，例如 `C:\Users\you\.ssh\id_ed25519`。
 - `src\417ssh_windows.py` 是早期 Tkinter 版本，默认入口已经切换到更接近 macOS UI 的 `src\417ssh_qt.py`。
+- 设置里可以检查 GitHub Releases 更新；检测到新版本后会下载 `.msi` 并启动安装器。
+- 发布新版本时，建议 release asset 使用 `417ssh-<版本>-win.msi` 命名。

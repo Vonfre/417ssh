@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import os
 import posixpath
 import stat
@@ -8,6 +9,8 @@ import subprocess
 import sys
 import threading
 import time
+import urllib.error
+import urllib.request
 import webbrowser
 from pathlib import Path
 from typing import Callable
@@ -48,6 +51,10 @@ except Exception:  # pragma: no cover - optional runtime fallback
 
 
 APP_NAME = "417ssh"
+CURRENT_VERSION = "0.2.0"
+GITHUB_REPO = "Vonfre/417ssh"
+LATEST_RELEASE_API = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
+RELEASES_URL = f"https://github.com/{GITHUB_REPO}/releases"
 APP_DIR = Path(__file__).resolve().parents[1]
 ASSETS_DIR = APP_DIR / "assets"
 CORE_PATH = Path(__file__).with_name("417ssh_windows.py")
@@ -71,6 +78,115 @@ TerminalSession = core.TerminalSession
 RemoteFileEntry = core.RemoteFileEntry
 connect_ssh = core.connect_ssh
 bytes_label = core.bytes_label
+SETTINGS_FILE = core.CONFIG_DIR / "settings.json"
+
+
+def load_app_settings() -> dict:
+    defaults = {"auto_check_updates": True}
+    if not SETTINGS_FILE.exists():
+        return defaults
+    try:
+        data = json.loads(SETTINGS_FILE.read_text(encoding="utf-8"))
+        if isinstance(data, dict):
+            defaults.update({key: value for key, value in data.items() if key in defaults})
+    except Exception:
+        pass
+    return defaults
+
+
+def save_app_settings(settings: dict) -> None:
+    core.CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    SETTINGS_FILE.write_text(json.dumps(settings, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def version_parts(version: str) -> list[int]:
+    cleaned = version.strip().lstrip("vV")
+    parts: list[int] = []
+    current = ""
+    for char in cleaned:
+        if char.isdigit():
+            current += char
+        elif current:
+            parts.append(int(current))
+            current = ""
+    if current:
+        parts.append(int(current))
+    return parts
+
+
+def is_version_newer(candidate: str, current: str) -> bool:
+    left = version_parts(candidate)
+    right = version_parts(current)
+    count = max(len(left), len(right), 3)
+    for index in range(count):
+        lhs = left[index] if index < len(left) else 0
+        rhs = right[index] if index < len(right) else 0
+        if lhs != rhs:
+            return lhs > rhs
+    return False
+
+
+def release_version(release: dict) -> str:
+    return str(release.get("tag_name") or "").strip().lstrip("vV")
+
+
+def windows_release_asset(release: dict) -> dict | None:
+    assets = release.get("assets") or []
+    msi_assets = [
+        asset for asset in assets
+        if str(asset.get("name", "")).lower().endswith(".msi")
+    ]
+    for asset in msi_assets:
+        name = str(asset.get("name", "")).lower()
+        if "win" in name or "windows" in name or "417ssh" in name:
+            return asset
+    if msi_assets:
+        return msi_assets[0]
+
+    exe_assets = [
+        asset for asset in assets
+        if str(asset.get("name", "")).lower().endswith(".exe")
+    ]
+    return exe_assets[0] if exe_assets else None
+
+
+def fetch_latest_release() -> dict:
+    request = urllib.request.Request(
+        LATEST_RELEASE_API,
+        headers={
+            "User-Agent": f"417ssh/{CURRENT_VERSION}",
+            "Accept": "application/vnd.github+json",
+        },
+    )
+    with urllib.request.urlopen(request, timeout=20) as response:
+        return json.loads(response.read().decode("utf-8"))
+
+
+def downloads_dir() -> Path:
+    if sys.platform == "win32":
+        return Path(os.environ.get("USERPROFILE", str(Path.home()))) / "Downloads"
+    return Path.home() / "Downloads"
+
+
+def download_release_asset(asset: dict) -> Path:
+    name = str(asset.get("name") or "417ssh-update.msi")
+    url = str(asset.get("browser_download_url") or "")
+    if not url:
+        raise RuntimeError("Release asset 缺少下载地址。")
+
+    target_dir = downloads_dir() / "417ssh-updates"
+    target_dir.mkdir(parents=True, exist_ok=True)
+    destination = target_dir / name
+
+    request = urllib.request.Request(url, headers={"User-Agent": f"417ssh/{CURRENT_VERSION}"})
+    with urllib.request.urlopen(request, timeout=120) as response:
+        with destination.open("wb") as handle:
+            while True:
+                chunk = response.read(1024 * 512)
+                if not chunk:
+                    break
+                handle.write(chunk)
+    return destination
 
 
 class Bridge(QObject):
@@ -81,6 +197,10 @@ class Bridge(QObject):
     sftp_done = Signal(list, str)
     sftp_error = Signal(str)
     sftp_status = Signal(str)
+    update_done = Signal(dict, object)
+    update_error = Signal(str)
+    update_downloaded = Signal(str)
+    update_status = Signal(str)
 
 
 def clear_layout(layout) -> None:
@@ -354,6 +474,100 @@ class ProfileEditor(QDialog):
         self.accept()
 
 
+class AppSettingsDialog(QDialog):
+    settings_changed = Signal(dict)
+    check_requested = Signal()
+    install_requested = Signal()
+
+    def __init__(
+        self,
+        settings: dict,
+        update_status: str,
+        latest_release: dict | None,
+        update_asset: dict | None,
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self.settings = dict(settings)
+        self.latest_release = latest_release
+        self.update_asset = update_asset
+        self.setWindowTitle("417ssh 设置")
+        self.resize(560, 420)
+        self.setMinimumWidth(520)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(18, 18, 18, 18)
+        layout.setSpacing(14)
+
+        header = QHBoxLayout()
+        header.addWidget(make_logo(42))
+        title_box = QVBoxLayout()
+        title = QLabel("417ssh 设置")
+        title.setStyleSheet("font-size: 18px; font-weight: 750;")
+        subtitle = QLabel(f"版本 {CURRENT_VERSION}")
+        subtitle.setStyleSheet("color: #6b7280;")
+        title_box.addWidget(title)
+        title_box.addWidget(subtitle)
+        header.addLayout(title_box, 1)
+        layout.addLayout(header)
+
+        self.auto_check = QCheckBox("启动时自动检查 GitHub 更新")
+        self.auto_check.setChecked(bool(self.settings.get("auto_check_updates", True)))
+        self.auto_check.toggled.connect(self.on_auto_check_toggled)
+        layout.addWidget(self.auto_check)
+
+        self.status_label = QLabel()
+        self.status_label.setWordWrap(True)
+        layout.addWidget(self.status_label)
+
+        self.release_notes = QTextEdit()
+        self.release_notes.setReadOnly(True)
+        self.release_notes.setFixedHeight(115)
+        layout.addWidget(self.release_notes)
+
+        button_row = QHBoxLayout()
+        self.check_button = QPushButton("检查更新")
+        self.check_button.clicked.connect(self.check_requested.emit)
+        button_row.addWidget(self.check_button)
+
+        self.install_button = QPushButton("下载并启动安装器")
+        self.install_button.clicked.connect(self.install_requested.emit)
+        button_row.addWidget(self.install_button)
+
+        releases = QPushButton("打开 GitHub Releases")
+        releases.clicked.connect(lambda: webbrowser.open(RELEASES_URL))
+        button_row.addWidget(releases)
+        button_row.addStretch(1)
+        layout.addLayout(button_row)
+
+        tip = QLabel("Windows 版会下载 GitHub Release 中的 .msi 并启动安装器；运行中的应用需要关闭后再完成替换。")
+        tip.setWordWrap(True)
+        tip.setStyleSheet("color: #6b7280; font-size: 12px;")
+        layout.addWidget(tip)
+        layout.addStretch(1)
+
+        self.set_update_state(update_status, latest_release, update_asset)
+
+    def on_auto_check_toggled(self, checked: bool) -> None:
+        self.settings["auto_check_updates"] = checked
+        self.settings_changed.emit(dict(self.settings))
+
+    def set_update_state(self, update_status: str, latest_release: dict | None, update_asset: dict | None) -> None:
+        self.latest_release = latest_release
+        self.update_asset = update_asset
+        self.status_label.setText(update_status)
+        self.install_button.setEnabled(update_asset is not None and "发现新版本" in update_status)
+        self.check_button.setEnabled("正在" not in update_status)
+
+        if latest_release:
+            title = latest_release.get("name") or latest_release.get("tag_name") or "417ssh 更新"
+            body = latest_release.get("body") or "这个版本没有填写 release notes。"
+            asset_name = update_asset.get("name") if update_asset else "未找到 Windows .msi 安装包"
+            self.release_notes.setPlainText(f"{title}\n\n安装包：{asset_name}\n\n{body}")
+        else:
+            self.release_notes.setPlainText("还没有检查更新。")
+
+
 class RemoteFileTree(QTreeWidget):
     dropped_paths = Signal(list)
 
@@ -401,6 +615,12 @@ class MainWindow(QMainWindow):
         self.remote_entries: list[RemoteFileEntry] = []
         self.current_remote_path = "."
         self.current_webview = None
+        self.app_settings = load_app_settings()
+        self.update_status = "尚未检查更新"
+        self.latest_release: dict | None = None
+        self.update_asset: dict | None = None
+        self.settings_dialog: AppSettingsDialog | None = None
+        self.update_check_silent = False
 
         self.setWindowTitle(APP_NAME)
         self.resize(1180, 760)
@@ -409,6 +629,8 @@ class MainWindow(QMainWindow):
         self.build_shell()
         self.refresh_sidebar()
         self.render_selected_profile()
+        if self.app_settings.get("auto_check_updates", True):
+            QTimer.singleShot(1200, lambda: self.check_updates(silent=True))
 
     def install_event_handlers(self) -> None:
         self.bridge.tunnel_log.connect(self.append_tunnel_log)
@@ -418,6 +640,10 @@ class MainWindow(QMainWindow):
         self.bridge.sftp_done.connect(self.handle_sftp_done)
         self.bridge.sftp_error.connect(self.handle_sftp_error)
         self.bridge.sftp_status.connect(self.handle_sftp_status)
+        self.bridge.update_done.connect(self.handle_update_done)
+        self.bridge.update_error.connect(self.handle_update_error)
+        self.bridge.update_downloaded.connect(self.handle_update_downloaded)
+        self.bridge.update_status.connect(self.handle_update_status)
 
     def build_shell(self) -> None:
         splitter = QSplitter(Qt.Horizontal)
@@ -464,6 +690,7 @@ class MainWindow(QMainWindow):
             ("终端", lambda: self.add_profile("terminal")),
             ("复制", self.duplicate_profile),
             ("删除", self.delete_profile),
+            ("设置", self.open_settings),
         ):
             button = QPushButton(text)
             button.clicked.connect(callback)
@@ -1099,6 +1326,109 @@ class MainWindow(QMainWindow):
                 sftp.stat(current)
             except OSError:
                 sftp.mkdir(current)
+
+    def open_settings(self) -> None:
+        dialog = AppSettingsDialog(
+            self.app_settings,
+            self.update_status,
+            self.latest_release,
+            self.update_asset,
+            self,
+        )
+        self.settings_dialog = dialog
+        dialog.settings_changed.connect(self.save_settings)
+        dialog.check_requested.connect(lambda: self.check_updates(silent=False))
+        dialog.install_requested.connect(self.download_and_install_update)
+        dialog.finished.connect(lambda _result: self.clear_settings_dialog(dialog))
+        dialog.exec()
+
+    def clear_settings_dialog(self, dialog: AppSettingsDialog) -> None:
+        if self.settings_dialog is dialog:
+            self.settings_dialog = None
+
+    def save_settings(self, settings: dict) -> None:
+        self.app_settings = dict(settings)
+        save_app_settings(self.app_settings)
+
+    def check_updates(self, silent: bool = False) -> None:
+        self.update_check_silent = silent
+        self.update_status = "正在检查更新"
+        self.update_dialog_refresh()
+
+        def work() -> None:
+            try:
+                release = fetch_latest_release()
+                asset = windows_release_asset(release)
+                self.bridge.update_done.emit(release, asset)
+            except Exception as exc:
+                self.bridge.update_error.emit(str(exc))
+
+        threading.Thread(target=work, name="UpdateCheck", daemon=True).start()
+
+    def handle_update_done(self, release: dict, asset: object) -> None:
+        self.latest_release = release
+        self.update_asset = asset if isinstance(asset, dict) else None
+        version = release_version(release)
+
+        if version and is_version_newer(version, CURRENT_VERSION):
+            if self.update_asset is None:
+                self.update_status = f"发现新版本 {version}，但 release 里没有 Windows .msi 安装包"
+            else:
+                self.update_status = f"发现新版本 {version}"
+        else:
+            self.update_status = "已是最新版本"
+
+        self.update_dialog_refresh()
+
+        if not self.update_check_silent and self.update_status == "已是最新版本":
+            QMessageBox.information(self, APP_NAME, "当前已经是最新版本。")
+
+    def handle_update_error(self, message: str) -> None:
+        if self.update_check_silent:
+            self.update_status = "尚未检查更新"
+        else:
+            self.update_status = f"更新失败：{message}"
+            QMessageBox.critical(self, APP_NAME, self.update_status)
+        self.update_dialog_refresh()
+
+    def download_and_install_update(self) -> None:
+        if self.update_asset is None:
+            webbrowser.open(RELEASES_URL)
+            return
+
+        self.update_status = "正在下载安装包"
+        self.update_dialog_refresh()
+
+        def work() -> None:
+            try:
+                path = download_release_asset(self.update_asset)
+                self.bridge.update_downloaded.emit(str(path))
+            except Exception as exc:
+                self.bridge.update_error.emit(str(exc))
+
+        threading.Thread(target=work, name="UpdateDownload", daemon=True).start()
+
+    def handle_update_downloaded(self, path_text: str) -> None:
+        installer_path = Path(path_text)
+        self.update_status = f"安装包已下载：{installer_path}"
+        self.update_dialog_refresh()
+
+        try:
+            if sys.platform == "win32" and installer_path.suffix.lower() == ".msi":
+                subprocess.Popen(["msiexec", "/i", str(installer_path)])
+            else:
+                os.startfile(str(installer_path)) if sys.platform == "win32" else webbrowser.open(str(installer_path))
+            QMessageBox.information(self, APP_NAME, "安装器已启动。请关闭当前 417ssh 后继续安装。")
+        except Exception as exc:
+            QMessageBox.critical(self, APP_NAME, f"启动安装器失败：{exc}")
+
+    def handle_update_status(self, status: str) -> None:
+        self.update_status = status
+        self.update_dialog_refresh()
+
+    def update_dialog_refresh(self) -> None:
+        if self.settings_dialog is not None:
+            self.settings_dialog.set_update_state(self.update_status, self.latest_release, self.update_asset)
 
     def add_profile(self, kind: str) -> None:
         profile = self.store.add(kind)
