@@ -2,13 +2,9 @@
 
 一个原生 macOS 应用，用来保存多组 SSH 配置，并把 Jupyter 隧道、SSH 终端和 SFTP 文件传输分成清晰的工作区。
 
-默认示例配置对应：
+默认不会预填任何私人连接信息。新建 Jupyter 工作区后，按自己的服务器填写目标主机、端口、跳板机和页面路径。
 
-```bash
-ssh -CNgv -L 8003:node12:8003 -J zhanghuan@www.chenlianfu.com:52922 zhanghuan@node12
-```
-
-连接成功后，Jupyter 页会打开：
+连接成功后，Jupyter 页默认会打开：
 
 ```text
 http://127.0.0.1:8003/lab/tree/work
@@ -73,7 +69,7 @@ build/417ssh-<版本>-mac-app.zip
 
 ## 说明
 
-- 新增配置使用空白 SSH 模板，不会自动填入 node12 连接。
+- 新增配置使用空白 SSH 模板，不会自动填入私人服务器连接。
 - Jupyter 和终端使用独立进程，互不影响；断开终端不会关闭 Jupyter 隧道。
 - 隧道由 macOS 自带的 `/usr/bin/ssh` 建立。
 - 如果填写密码，应用会用 `/usr/bin/expect` 自动响应 SSH、终端和 SFTP 的密码提示。
@@ -82,4 +78,4 @@ build/417ssh-<版本>-mac-app.zip
 - 应用退出时会自动关闭本次由应用创建的 Jupyter 隧道、SSH 终端和 SFTP 操作。
 - 已经在终端或旧版本应用里启动的隧道不会被自动接管；端口占用时可以使用应用里的关闭占用重连按钮。
 - 如果密码为空，应用会使用密钥或 `ssh-agent`。
-- 设置里可以检查 GitHub Releases 更新；检测到新版本后会下载并打开 `.app.zip`。
+- 设置里可以检查 GitHub Releases 更新；检测到新版本后会下载、安装并重启到新版。

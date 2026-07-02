@@ -101,30 +101,7 @@ class SSHProfile:
 
     @classmethod
     def sample(cls) -> "SSHProfile":
-        return cls(
-            id=str(uuid.uuid4()),
-            workspaceKind="jupyter",
-            name="node12 工作区",
-            localPort=8003,
-            remoteHost="node12",
-            remotePort=8003,
-            jumpUser="zhanghuan",
-            jumpHost="www.chenlianfu.com",
-            jumpPort=52922,
-            targetUser="zhanghuan",
-            targetHost="node12",
-            targetPort=22,
-            jupyterPath="/lab/tree/work",
-            sshPassword="",
-            identityFile="",
-            compressionEnabled=True,
-            verboseLogging=True,
-            allowRemoteLocalPortAccess=True,
-            keepAliveEnabled=True,
-            keepAliveInterval=30,
-            keepAliveCountMax=120,
-            useSSHConfig=False,
-        )
+        return cls.blank(1, "jupyter")
 
     @classmethod
     def blank(cls, number: int, kind: str) -> "SSHProfile":

@@ -9,7 +9,7 @@ final class UpdateManager: ObservableObject {
         case upToDate
         case updateAvailable(String)
         case downloading
-        case downloaded(URL)
+        case installing
         case failed(String)
 
         var label: String {
@@ -23,9 +23,9 @@ final class UpdateManager: ObservableObject {
             case .updateAvailable(let version):
                 return "发现新版本 \(version)"
             case .downloading:
-                return "正在下载更新包"
-            case .downloaded:
-                return "更新包已打开"
+                return "正在下载并准备安装"
+            case .installing:
+                return "正在安装更新并重启应用"
             case .failed(let message):
                 return "更新失败：\(message)"
             }
@@ -72,11 +72,11 @@ final class UpdateManager: ObservableObject {
         }
     }
 
-    func downloadAndOpenInstaller() async {
+    func downloadAndInstallUpdate() async {
         guard let latestRelease else {
             await checkForUpdates()
             guard case .updateAvailable = status else { return }
-            return await downloadAndOpenInstaller()
+            return await downloadAndInstallUpdate()
         }
 
         guard let asset = latestRelease.macUpdateAsset else {
@@ -87,9 +87,13 @@ final class UpdateManager: ObservableObject {
 
         do {
             status = .downloading
-            let installerURL = try await download(asset: asset)
-            NSWorkspace.shared.open(installerURL)
-            status = .downloaded(installerURL)
+            let packageURL = try await download(asset: asset)
+            let appURL = try prepareAppBundle(from: packageURL)
+            status = .installing
+            try launchInstaller(newAppURL: appURL)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+                NSApp.terminate(nil)
+            }
         } catch {
             status = .failed(error.localizedDescription)
         }
@@ -127,9 +131,7 @@ final class UpdateManager: ObservableObject {
             throw UpdateError.httpStatus(httpResponse.statusCode)
         }
 
-        let downloadsDirectory = FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask).first
-            ?? FileManager.default.temporaryDirectory
-        let updatesDirectory = downloadsDirectory.appendingPathComponent("417ssh-updates", isDirectory: true)
+        let updatesDirectory = FileManager.default.temporaryDirectory.appendingPathComponent("417ssh-updates", isDirectory: true)
         try FileManager.default.createDirectory(at: updatesDirectory, withIntermediateDirectories: true)
 
         let destinationURL = updatesDirectory.appendingPathComponent(asset.name)
@@ -138,6 +140,140 @@ final class UpdateManager: ObservableObject {
         }
         try FileManager.default.moveItem(at: temporaryURL, to: destinationURL)
         return destinationURL
+    }
+
+    private func prepareAppBundle(from packageURL: URL) throws -> URL {
+        let stagingURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("417ssh-install-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: stagingURL, withIntermediateDirectories: true)
+        try extractZip(packageURL, to: stagingURL)
+
+        guard let appURL = findAppBundle(in: stagingURL) else {
+            throw UpdateError.appBundleNotFound
+        }
+        return appURL
+    }
+
+    private func extractZip(_ packageURL: URL, to destinationURL: URL) throws {
+        if FileManager.default.fileExists(atPath: "/usr/bin/ditto") {
+            try runProcess(
+                executable: "/usr/bin/ditto",
+                arguments: ["-x", "-k", packageURL.path, destinationURL.path]
+            )
+            return
+        }
+
+        try runProcess(
+            executable: "/usr/bin/unzip",
+            arguments: ["-q", packageURL.path, "-d", destinationURL.path]
+        )
+    }
+
+    private func findAppBundle(in directoryURL: URL) -> URL? {
+        guard
+            let enumerator = FileManager.default.enumerator(
+                at: directoryURL,
+                includingPropertiesForKeys: [.isDirectoryKey],
+                options: [.skipsHiddenFiles]
+            )
+        else {
+            return nil
+        }
+
+        var candidates: [URL] = []
+        for case let fileURL as URL in enumerator {
+            guard fileURL.pathExtension == "app" else { continue }
+            candidates.append(fileURL)
+            enumerator.skipDescendants()
+        }
+
+        return candidates.first { $0.lastPathComponent == "417ssh.app" } ?? candidates.first
+    }
+
+    private func launchInstaller(newAppURL: URL) throws {
+        let targetAppURL = Bundle.main.bundleURL.standardizedFileURL
+        guard targetAppURL.pathExtension == "app" else {
+            throw UpdateError.notRunningFromAppBundle
+        }
+
+        let scriptURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("417ssh-install-\(UUID().uuidString).sh")
+        let stagingURL = newAppURL.deletingLastPathComponent()
+        let targetParentURL = targetAppURL.deletingLastPathComponent()
+        let processIdentifier = ProcessInfo.processInfo.processIdentifier
+
+        let script = """
+        #!/bin/bash
+        set -u
+
+        APP_PID=\(processIdentifier)
+        NEW_APP=\(shellQuoted(newAppURL.path))
+        TARGET_APP=\(shellQuoted(targetAppURL.path))
+        TARGET_PARENT=\(shellQuoted(targetParentURL.path))
+        STAGING_DIR=\(shellQuoted(stagingURL.path))
+        BACKUP_APP="${TARGET_APP}.previous-update"
+
+        while /bin/kill -0 "$APP_PID" 2>/dev/null; do
+          /bin/sleep 0.2
+        done
+
+        if ! /bin/mkdir -p "$TARGET_PARENT"; then
+          /usr/bin/open "$TARGET_APP" || true
+          exit 1
+        fi
+
+        /bin/rm -rf "$BACKUP_APP"
+        if [ -d "$TARGET_APP" ]; then
+          if ! /bin/mv "$TARGET_APP" "$BACKUP_APP"; then
+            /usr/bin/open "$TARGET_APP" || true
+            exit 1
+          fi
+        fi
+
+        if /usr/bin/ditto "$NEW_APP" "$TARGET_APP"; then
+          /bin/rm -rf "$BACKUP_APP"
+          /bin/rm -rf "$STAGING_DIR"
+          /usr/bin/open "$TARGET_APP"
+          /bin/rm -f "$0"
+          exit 0
+        fi
+
+        if [ -d "$BACKUP_APP" ] && [ ! -d "$TARGET_APP" ]; then
+          /bin/mv "$BACKUP_APP" "$TARGET_APP"
+        fi
+        /usr/bin/open "$TARGET_APP" || true
+        exit 1
+        """
+
+        try script.write(to: scriptURL, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: scriptURL.path)
+
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/bash")
+        process.arguments = [scriptURL.path]
+        try process.run()
+    }
+
+    private func runProcess(executable: String, arguments: [String]) throws {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: executable)
+        process.arguments = arguments
+
+        let errorPipe = Pipe()
+        process.standardError = errorPipe
+        try process.run()
+        process.waitUntilExit()
+
+        guard process.terminationStatus == 0 else {
+            let errorData = errorPipe.fileHandleForReading.readDataToEndOfFile()
+            let errorMessage = String(data: errorData, encoding: .utf8)?
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            throw UpdateError.processFailed(URL(fileURLWithPath: executable).lastPathComponent, errorMessage ?? "")
+        }
+    }
+
+    private func shellQuoted(_ value: String) -> String {
+        "'\(value.replacingOccurrences(of: "'", with: "'\"'\"'"))'"
     }
 
     private func isVersion(_ candidate: String, newerThan current: String) -> Bool {
@@ -212,13 +348,28 @@ struct GitHubRelease: Decodable {
 private enum UpdateError: LocalizedError {
     case httpStatus(Int)
     case invalidAssetURL
+    case appBundleNotFound
+    case notRunningFromAppBundle
+    case processFailed(String, String)
 
     var errorDescription: String? {
         switch self {
         case .httpStatus(let status):
+            if status == 404 {
+                return "GitHub 返回 HTTP 404。请确认仓库和 Releases 是 public，并且已经有 latest release。"
+            }
             return "GitHub 返回 HTTP \(status)"
         case .invalidAssetURL:
             return "更新包下载地址无效"
+        case .appBundleNotFound:
+            return "更新包里没有找到 417ssh.app"
+        case .notRunningFromAppBundle:
+            return "当前不是从 417ssh.app 运行，不能自动替换应用文件"
+        case .processFailed(let command, let message):
+            if message.isEmpty {
+                return "\(command) 执行失败"
+            }
+            return "\(command) 执行失败：\(message)"
         }
     }
 }

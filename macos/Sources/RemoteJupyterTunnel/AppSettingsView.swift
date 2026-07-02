@@ -77,7 +77,7 @@ struct AppSettingsView: View {
 
                     Button(downloadButtonTitle) {
                         Task {
-                            await updateManager.downloadAndOpenInstaller()
+                            await updateManager.downloadAndInstallUpdate()
                         }
                     }
                     .disabled(!canDownload)
@@ -88,7 +88,7 @@ struct AppSettingsView: View {
                 }
             }
 
-            Text("检查更新会读取 GitHub Releases，并显示当前版本、最新版本和对应的 macOS 更新包。下载后会打开 zip，解压后替换现有 417ssh.app 即可。若要完全静默替换，后续需要接入签名、notarization 和 Sparkle。")
+            Text("检查更新会读取 GitHub Releases，并显示当前版本、最新版本和对应的 macOS 更新包。安装新版会自动下载、解压、替换当前 417ssh.app，然后重启应用。")
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -118,14 +118,14 @@ struct AppSettingsView: View {
 
     private var downloadButtonTitle: String {
         if case .updateAvailable = updateManager.status {
-            return "下载新版"
+            return "下载并安装新版"
         }
-        return "下载并打开更新包"
+        return "下载并安装更新"
     }
 
     private var isBusy: Bool {
         switch updateManager.status {
-        case .checking, .downloading:
+        case .checking, .downloading, .installing:
             return true
         default:
             return false
@@ -143,9 +143,9 @@ struct AppSettingsView: View {
         switch updateManager.status {
         case .idle:
             return .secondary
-        case .checking, .downloading:
+        case .checking, .downloading, .installing:
             return .orange
-        case .upToDate, .downloaded:
+        case .upToDate:
             return .green
         case .updateAvailable:
             return .blue

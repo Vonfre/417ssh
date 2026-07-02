@@ -1145,7 +1145,7 @@ private struct RemoteFileBrowserPane: View {
                     .disabled(isRootPath || !sftp.canNavigateDirectories)
 
                     HStack(spacing: 6) {
-                        TextField("远程路径，例如 /home/zhanghuan", text: $remotePathText)
+                        TextField("远程路径，例如 /home/user", text: $remotePathText)
                             .textFieldStyle(.plain)
                             .font(.callout.weight(.medium))
                             .onSubmit {

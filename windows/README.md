@@ -71,5 +71,5 @@ dist\417ssh-<版本>-win-portable.zip
 - “原生终端”调用 Windows 自带 OpenSSH 的 `ssh` 命令；如果用密码登录，需要在弹出的终端里手动输入密码。
 - 如果要使用密钥，请在配置里填写 Windows 路径，例如 `C:\Users\you\.ssh\id_ed25519`。
 - `src\417ssh_windows.py` 是早期 Tkinter 版本，默认入口已经切换到更接近 macOS UI 的 `src\417ssh_qt.py`。
-- 设置里可以检查 GitHub Releases 更新；检测到新版本后会下载 portable `.zip` 并打开。
+- 设置里可以检查 GitHub Releases 更新；检测到新版本后会下载 portable `.zip`，自动解压、替换当前 portable 文件夹并重启。
 - 发布新版本时，release asset 使用 `417ssh-<版本>-win-portable.zip` 命名。

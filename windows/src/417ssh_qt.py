@@ -7,11 +7,13 @@ import posixpath
 import stat
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import urllib.error
 import urllib.request
 import webbrowser
+import zipfile
 from pathlib import Path
 from typing import Callable
 
@@ -70,7 +72,7 @@ def app_version() -> str:
         text = version_file.read_text(encoding="utf-8").strip()
         if text:
             return text
-    return "0.2.0"
+    return "0.2.11"
 
 
 CURRENT_VERSION = app_version()
@@ -175,14 +177,23 @@ def fetch_latest_release() -> dict:
             "Accept": "application/vnd.github+json",
         },
     )
-    with urllib.request.urlopen(request, timeout=20) as response:
-        return json.loads(response.read().decode("utf-8"))
+    try:
+        with urllib.request.urlopen(request, timeout=20) as response:
+            return json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        raise RuntimeError(github_http_error_message(exc.code)) from exc
 
 
-def downloads_dir() -> Path:
-    if sys.platform == "win32":
-        return Path(os.environ.get("USERPROFILE", str(Path.home()))) / "Downloads"
-    return Path.home() / "Downloads"
+def github_http_error_message(status: int) -> str:
+    if status == 404:
+        return "GitHub 返回 HTTP 404。请确认仓库和 Releases 是 public，并且已经有 latest release。"
+    return f"GitHub 返回 HTTP {status}"
+
+
+def update_work_dir() -> Path:
+    root = Path(tempfile.gettempdir()) / "417ssh-updates"
+    root.mkdir(parents=True, exist_ok=True)
+    return root
 
 
 def download_release_asset(asset: dict) -> Path:
@@ -191,19 +202,135 @@ def download_release_asset(asset: dict) -> Path:
     if not url:
         raise RuntimeError("Release asset 缺少下载地址。")
 
-    target_dir = downloads_dir() / "417ssh-updates"
-    target_dir.mkdir(parents=True, exist_ok=True)
+    target_dir = update_work_dir()
     destination = target_dir / name
 
     request = urllib.request.Request(url, headers={"User-Agent": f"417ssh/{CURRENT_VERSION}"})
-    with urllib.request.urlopen(request, timeout=120) as response:
-        with destination.open("wb") as handle:
-            while True:
-                chunk = response.read(1024 * 512)
-                if not chunk:
-                    break
-                handle.write(chunk)
+    try:
+        with urllib.request.urlopen(request, timeout=120) as response:
+            with destination.open("wb") as handle:
+                while True:
+                    chunk = response.read(1024 * 512)
+                    if not chunk:
+                        break
+                    handle.write(chunk)
+    except urllib.error.HTTPError as exc:
+        raise RuntimeError(github_http_error_message(exc.code)) from exc
     return destination
+
+
+def prepare_windows_update(package_path: Path) -> Path:
+    if sys.platform != "win32" or not getattr(sys, "frozen", False):
+        raise RuntimeError("自动替换只能在打包后的 Windows portable 版中使用。")
+
+    install_root = update_work_dir() / f"install-{os.getpid()}-{int(time.time())}"
+    staging_dir = install_root / "staging"
+    staging_dir.mkdir(parents=True, exist_ok=True)
+
+    safe_extract_zip(package_path, staging_dir)
+    new_app_dir = find_windows_app_dir(staging_dir)
+
+    current_exe = Path(sys.executable).resolve()
+    current_dir = current_exe.parent
+    backup_dir = install_root / "backup"
+    script_path = update_work_dir() / f"install-417ssh-update-{os.getpid()}-{int(time.time())}.bat"
+    script_path.write_text(
+        windows_update_script(
+            pid=os.getpid(),
+            new_app_dir=new_app_dir,
+            current_dir=current_dir,
+            backup_dir=backup_dir,
+            cleanup_dir=install_root,
+        ),
+        encoding="utf-8",
+    )
+    return script_path
+
+
+def safe_extract_zip(package_path: Path, destination: Path) -> None:
+    destination_root = destination.resolve()
+    with zipfile.ZipFile(package_path) as archive:
+        for member in archive.infolist():
+            member_path = (destination / member.filename).resolve()
+            try:
+                common_path = os.path.commonpath([str(destination_root), str(member_path)])
+            except ValueError as exc:
+                raise RuntimeError("更新包包含不安全路径。") from exc
+            if common_path != str(destination_root):
+                raise RuntimeError("更新包包含不安全路径。")
+        archive.extractall(destination)
+
+
+def find_windows_app_dir(staging_dir: Path) -> Path:
+    candidates = [path for path in staging_dir.rglob("417ssh.exe") if path.is_file()]
+    if not candidates:
+        raise RuntimeError("更新包里没有找到 417ssh.exe。")
+
+    for candidate in candidates:
+        if candidate.parent.name.lower() == APP_NAME.lower():
+            return candidate.parent
+    return candidates[0].parent
+
+
+def batch_value(path: Path | str) -> str:
+    return str(path).replace("%", "%%")
+
+
+def windows_update_script(
+    pid: int,
+    new_app_dir: Path,
+    current_dir: Path,
+    backup_dir: Path,
+    cleanup_dir: Path,
+) -> str:
+    return f"""@echo off
+setlocal
+set "APP_PID={pid}"
+set "SRC={batch_value(new_app_dir)}"
+set "DST={batch_value(current_dir)}"
+set "BACKUP={batch_value(backup_dir)}"
+set "CLEANUP={batch_value(cleanup_dir)}"
+set "EXE=417ssh.exe"
+
+:wait_for_app
+tasklist /FI "PID eq %APP_PID%" 2>NUL | find "%APP_PID%" >NUL
+if not errorlevel 1 (
+  timeout /T 1 /NOBREAK >NUL
+  goto wait_for_app
+)
+
+if exist "%BACKUP%" rmdir /S /Q "%BACKUP%" >NUL 2>NUL
+mkdir "%BACKUP%" >NUL 2>NUL
+robocopy "%DST%" "%BACKUP%" /E /NFL /NDL /NJH /NJS /NP >NUL
+robocopy "%SRC%" "%DST%" /E /NFL /NDL /NJH /NJS /NP >NUL
+set "COPY_CODE=%ERRORLEVEL%"
+
+if %COPY_CODE% LEQ 7 (
+  start "" "%DST%\\%EXE%"
+  rmdir /S /Q "%BACKUP%" >NUL 2>NUL
+  rmdir /S /Q "%CLEANUP%" >NUL 2>NUL
+  del "%~f0" >NUL 2>NUL
+  exit /B 0
+)
+
+robocopy "%BACKUP%" "%DST%" /E /NFL /NDL /NJH /NJS /NP >NUL
+start "" "%DST%\\%EXE%"
+exit /B %COPY_CODE%
+"""
+
+
+def launch_windows_update_script(script_path: Path) -> None:
+    creationflags = 0
+    if sys.platform == "win32":
+        creationflags |= subprocess.CREATE_NEW_PROCESS_GROUP
+        if hasattr(subprocess, "DETACHED_PROCESS"):
+            creationflags |= subprocess.DETACHED_PROCESS
+
+    subprocess.Popen(
+        ["cmd", "/c", str(script_path)],
+        close_fds=True,
+        creationflags=creationflags,
+    )
 
 
 class Bridge(QObject):
@@ -561,7 +688,7 @@ class AppSettingsDialog(QDialog):
         self.check_button.clicked.connect(self.check_requested.emit)
         button_row.addWidget(self.check_button)
 
-        self.install_button = QPushButton("下载并打开更新包")
+        self.install_button = QPushButton("下载并安装更新")
         self.install_button.clicked.connect(self.install_requested.emit)
         button_row.addWidget(self.install_button)
 
@@ -571,7 +698,7 @@ class AppSettingsDialog(QDialog):
         button_row.addStretch(1)
         layout.addLayout(button_row)
 
-        tip = QLabel("Windows 版会下载 GitHub Release 中的 portable .zip；解压后运行新的 417ssh.exe。")
+        tip = QLabel("Windows 版会下载 GitHub Release 中的 portable .zip，自动解压并替换当前 portable 文件夹，然后重启应用。")
         tip.setWordWrap(True)
         tip.setStyleSheet("color: #6b7280; font-size: 12px;")
         layout.addWidget(tip)
@@ -596,7 +723,7 @@ class AppSettingsDialog(QDialog):
             self.update_asset_label.setText("更新包：未找到 Windows portable .zip 更新包")
         else:
             self.update_asset_label.setText("更新包：尚未检查")
-        self.install_button.setText("下载新版" if update_asset is not None and "发现新版本" in update_status else "下载并打开更新包")
+        self.install_button.setText("下载并安装新版" if update_asset is not None and "发现新版本" in update_status else "下载并安装更新")
         self.install_button.setEnabled(update_asset is not None and "发现新版本" in update_status)
         self.check_button.setEnabled("正在" not in update_status)
 
@@ -1437,28 +1564,31 @@ class MainWindow(QMainWindow):
             webbrowser.open(RELEASES_URL)
             return
 
-        self.update_status = "正在下载更新包"
+        self.update_status = "正在下载并准备安装"
         self.update_dialog_refresh()
 
         def work() -> None:
             try:
                 path = download_release_asset(self.update_asset)
-                self.bridge.update_downloaded.emit(str(path))
+                script_path = prepare_windows_update(path)
+                self.bridge.update_downloaded.emit(str(script_path))
             except Exception as exc:
                 self.bridge.update_error.emit(str(exc))
 
         threading.Thread(target=work, name="UpdateDownload", daemon=True).start()
 
     def handle_update_downloaded(self, path_text: str) -> None:
-        package_path = Path(path_text)
-        self.update_status = f"更新包已下载：{package_path}"
+        script_path = Path(path_text)
+        self.update_status = "安装脚本已启动，正在重启应用"
         self.update_dialog_refresh()
 
         try:
-            os.startfile(str(package_path)) if sys.platform == "win32" else webbrowser.open(str(package_path))
-            QMessageBox.information(self, APP_NAME, "更新包已打开。请解压后运行新的 417ssh.exe。")
+            launch_windows_update_script(script_path)
+            app = QApplication.instance()
+            if app is not None:
+                QTimer.singleShot(250, app.quit)
         except Exception as exc:
-            QMessageBox.critical(self, APP_NAME, f"打开更新包失败：{exc}")
+            QMessageBox.critical(self, APP_NAME, f"启动安装脚本失败：{exc}")
 
     def handle_update_status(self, status: str) -> None:
         self.update_status = status

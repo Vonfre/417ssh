@@ -47,7 +47,7 @@ Windows portable 版本不需要安装 Python。配置文件保存在：
 - 一键建立本地 Jupyter 隧道，并在应用内打开 Jupyter Lab。
 - 提供内置终端，也支持打开系统原生终端。
 - 浏览远程目录，上传和下载文件或文件夹。
-- 从 GitHub Releases 检查更新并下载对应平台的 portable 包。
+- 从 GitHub Releases 检查更新，并可直接下载、安装、重启到新版。
 
 ## 版本与发布
 
@@ -84,8 +84,8 @@ windows/    Windows 版本，Python + PySide6/Qt + Paramiko
 
 ## 注意事项
 
-- macOS 版本以 zip 分发；解压后得到的 `.app` 就是可运行应用。
+- macOS 版本以 zip 分发；解压后得到的 `.app` 就是可运行应用，后续可在设置里直接更新。
 - 当前 macOS 包尚未做 Apple Developer ID 公证，首次双击可能触发 Gatekeeper 提示；按上面的右键打开步骤即可继续。
-- Windows 版本以 portable zip 分发；解压后的 `.exe` 就是可运行应用。
+- Windows 版本以 portable zip 分发；解压后的 `.exe` 就是可运行应用，后续可在设置里直接更新。
 - SSH 密码会随连接配置保存在应用配置里；如果不填写密码，应用会使用密钥或本机 SSH agent。
 - 旧版本或外部终端里已经启动的隧道不会被自动接管；如果端口被占用，可以在应用里关闭占用后重连。

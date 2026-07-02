@@ -9,8 +9,6 @@ final class ProfileStore: ObservableObject {
     private let defaults: UserDefaults
     private let profilesKey = "profiles.v1"
     private let selectedProfileKey = "selectedProfileID.v1"
-    private let node12GFlagMigrationKey = "migrations.node12GFlag.v1"
-    private let node12ManualCommandMigrationKey = "migrations.node12ManualCommand.v2"
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
@@ -24,9 +22,6 @@ final class ProfileStore: ObservableObject {
         } else {
             profiles = [.sample]
         }
-
-        migrateNode12ProfileToManualCommand()
-        migrateNode12ProfileCommandFlags()
 
         if
             let selectedString = defaults.string(forKey: selectedProfileKey),
@@ -108,40 +103,6 @@ final class ProfileStore: ObservableObject {
         return candidate
     }
 
-    private func migrateNode12ProfileToManualCommand() {
-        guard !defaults.bool(forKey: node12GFlagMigrationKey) else { return }
-
-        var changed = false
-        for index in profiles.indices {
-            guard profiles[index].matchesDefaultNode12Tunnel else { continue }
-            profiles[index].allowRemoteLocalPortAccess = true
-            changed = true
-        }
-
-        defaults.set(true, forKey: node12GFlagMigrationKey)
-        if changed {
-            save()
-        }
-    }
-
-    private func migrateNode12ProfileCommandFlags() {
-        guard !defaults.bool(forKey: node12ManualCommandMigrationKey) else { return }
-
-        var changed = false
-        for index in profiles.indices {
-            guard profiles[index].matchesDefaultNode12Tunnel else { continue }
-            profiles[index].compressionEnabled = true
-            profiles[index].verboseLogging = true
-            profiles[index].allowRemoteLocalPortAccess = true
-            changed = true
-        }
-
-        defaults.set(true, forKey: node12ManualCommandMigrationKey)
-        if changed {
-            save()
-        }
-    }
-
     private func save() {
         if let data = try? JSONEncoder().encode(profiles) {
             defaults.set(data, forKey: profilesKey)
@@ -154,17 +115,4 @@ final class ProfileStore: ObservableObject {
 struct BindingBox<Value> {
     var get: () -> Value
     var set: (Value) -> Void
-}
-
-private extension SSHProfile {
-    var matchesDefaultNode12Tunnel: Bool {
-        localPort == 8003
-            && remoteHost == "node12"
-            && remotePort == 8003
-            && jumpUser == "zhanghuan"
-            && jumpHost == "www.chenlianfu.com"
-            && jumpPort == 52922
-            && targetUser == "zhanghuan"
-            && targetHost == "node12"
-    }
 }
