@@ -7,6 +7,12 @@ macos/      原 Swift/macOS 版本，包含已有 417ssh.app 构建产物
 windows/    Windows 版本，Python + PySide6/Qt + Paramiko
 ```
 
+## 下载
+
+- [下载最新版 macOS DMG](https://github.com/Vonfre/417ssh/releases/latest/download/417ssh-0.2.2-mac.dmg)
+- [下载最新版 Windows MSI](https://github.com/Vonfre/417ssh/releases/latest/download/417ssh-0.2.2-win.msi)
+- [打开 GitHub Releases 下载页](https://github.com/Vonfre/417ssh/releases)
+
 ## 推荐发布方式
 
 在 GitHub Actions 里运行 `Build Release Installers` workflow，输入 tag，例如：

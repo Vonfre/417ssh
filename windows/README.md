@@ -8,6 +8,11 @@
 - 提供简易内置 SSH 终端，也可以打开 Windows 原生 `cmd.exe` 里的 `ssh`。
 - 浏览远程目录、返回上级、筛选、拖拽上传、按钮上传文件/文件夹、下载文件/文件夹。
 
+## 下载
+
+- [下载最新版 Windows MSI](https://github.com/Vonfre/417ssh/releases/latest/download/417ssh-0.2.2-win.msi)
+- [打开 GitHub Releases 下载页](https://github.com/Vonfre/417ssh/releases)
+
 ## 运行
 
 先安装 Windows 版 Python 3.10+，然后双击：

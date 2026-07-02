@@ -14,6 +14,11 @@ ssh -CNgv -L 8003:node12:8003 -J zhanghuan@www.chenlianfu.com:52922 zhanghuan@no
 http://127.0.0.1:8003/lab/tree/work
 ```
 
+## 下载
+
+- [下载最新版 macOS DMG](https://github.com/Vonfre/417ssh/releases/latest/download/417ssh-0.2.2-mac.dmg)
+- [打开 GitHub Releases 下载页](https://github.com/Vonfre/417ssh/releases)
+
 ## 构建
 
 推荐使用仓库根目录的 GitHub Actions workflow `Build Release Installers` 生成并上传 DMG。
