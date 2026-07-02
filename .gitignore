@@ -1,3 +1,9 @@
+.build/
+build/
+dist/
+*.spec
+*.dmg
+*.msi
 .DS_Store
 __pycache__/
 *.pyc
@@ -5,5 +11,18 @@ __pycache__/
 .env
 .venv/
 node_modules/
-dist/
-build/
+
+# Swift / Xcode build cache
+.build/
+**/.build/
+
+# macOS
+.DS_Store
+
+# Python / general cache
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+.env
+.venv/
+node_modules/
