@@ -1,7 +1,7 @@
 import Foundation
 
 enum AppVersion {
-    static let fallbackVersion = "0.2.3"
+    static let fallbackVersion = "0.2.4"
     static let repository = "Vonfre/417ssh"
 
     static var current: String {
