@@ -195,7 +195,12 @@ jobs:
           - macOS: \`417ssh-$VERSION-mac-app.zip\`
           - Windows: \`417ssh-$VERSION-win-portable.zip\`
 
-          macOS: unzip, drag \`417ssh.app\` to Applications if desired, then open it once from Finder with right click -> Open if Gatekeeper blocks it.
+          macOS:
+          1. Unzip \`417ssh-$VERSION-mac-app.zip\`.
+          2. Run \`417ssh.app\`, or drag it to Applications first.
+          3. If macOS says Apple cannot verify \`417ssh\`, click Done, do not move it to Trash. Then right click \`417ssh.app\` in Finder and choose Open.
+          4. A Chinese first-run guide is included as \`README-macOS.txt\` inside the zip.
+
           Windows: unzip the folder and run \`417ssh.exe\`.
           NOTES
 

@@ -20,9 +20,9 @@
 ### macOS
 
 1. 下载 `417ssh-<版本>-mac-app.zip`。
-2. 解压得到 `417ssh.app`。
+2. 解压得到 `417ssh.app` 和 `README-macOS.txt`。
 3. 双击运行，或拖到 `Applications` 后运行。
-4. 如果 macOS 提示无法打开，在 Finder 里右键 `417ssh.app`，选择 `打开`。
+4. 如果 macOS 提示“Apple 无法验证”，先点“完成”，不要点“移到废纸篓”；然后在 Finder 里右键 `417ssh.app`，选择 `打开`。
 
 macOS 版本使用系统自带的 `/usr/bin/ssh` 建立隧道和终端连接。
 
@@ -85,6 +85,7 @@ windows/    Windows 版本，Python + PySide6/Qt + Paramiko
 ## 注意事项
 
 - macOS 版本以 zip 分发；解压后得到的 `.app` 就是可运行应用。
+- 当前 macOS 包尚未做 Apple Developer ID 公证，首次双击可能触发 Gatekeeper 提示；按上面的右键打开步骤即可继续。
 - Windows 版本以 portable zip 分发；解压后的 `.exe` 就是可运行应用。
 - SSH 密码会随连接配置保存在应用配置里；如果不填写密码，应用会使用密钥或本机 SSH agent。
 - 旧版本或外部终端里已经启动的隧道不会被自动接管；如果端口被占用，可以在应用里关闭占用后重连。

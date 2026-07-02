@@ -22,7 +22,15 @@ http://127.0.0.1:8003/lab/tree/work
 417ssh-<版本>-mac-app.zip
 ```
 
-解压后得到 `417ssh.app`。可以直接运行，也可以拖到 `Applications`。如果 macOS 第一次阻止打开，在 Finder 里右键 `417ssh.app`，选择 `打开`。
+解压后得到 `417ssh.app` 和 `README-macOS.txt`。可以直接运行，也可以拖到 `Applications`。
+
+如果 macOS 第一次提示“Apple 无法验证 417ssh”：
+
+1. 点击“完成”，不要点击“移到废纸篓”。
+2. 在 Finder 里右键 `417ssh.app`，选择 `打开`。
+3. 在新的提示窗口里再次选择 `打开`。
+
+如果仍然不能打开，到“系统设置” -> “隐私与安全性”里选择“仍要打开”。这个提示来自 Gatekeeper；要从根本上消除，需要 Apple Developer ID 签名和 notarization。
 
 ## 构建
 
