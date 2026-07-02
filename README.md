@@ -1,65 +1,90 @@
 # 417ssh
 
-`417ssh` 是一个 SSH / Jupyter / SFTP 桌面工具，按平台拆成两套工程：
+[![Build Release Packages](https://github.com/Vonfre/417ssh/actions/workflows/release.yml/badge.svg)](https://github.com/Vonfre/417ssh/actions/workflows/release.yml)
 
-```text
-macos/      原生 Swift/macOS 版本
-windows/    Windows 版本，Python + PySide6/Qt + Paramiko
-```
+`417ssh` 是一个面向 SSH / Jupyter / SFTP 日常工作的桌面工具。它把常用的远程连接、Jupyter 端口转发、终端和文件传输放在同一个界面里，适合经常通过跳板机连接服务器、打开 Jupyter Lab、上传下载文件的工作流。
 
-## 下载使用
+## 下载
 
-打开 [GitHub Releases](https://github.com/Vonfre/417ssh/releases)，下载对应平台的发布包：
+普通用户请打开 [GitHub Releases](https://github.com/Vonfre/417ssh/releases) 下载成品包。
 
-```text
-macOS:   417ssh-<版本>-mac-app.zip
-Windows: 417ssh-<版本>-win-portable.zip
-```
+| 平台 | 下载文件 | 使用方式 |
+| --- | --- | --- |
+| macOS | `417ssh-<版本>-mac-app.zip` | 解压后运行 `417ssh.app` |
+| Windows | `417ssh-<版本>-win-portable.zip` | 解压后运行 `417ssh.exe` |
 
-macOS 使用方式：
+不要点击 GitHub 的 `Code -> Download ZIP` 当作应用下载。那个 zip 是源码包，不能直接当桌面应用运行。
 
-1. 解压 `417ssh-<版本>-mac-app.zip`。
-2. 得到 `417ssh.app`，可以直接运行，也可以拖到 `Applications`。
-3. 如果系统提示无法打开，在 Finder 里右键 `417ssh.app`，选择 `打开`。
+## 快速开始
 
-Windows 使用方式：
+### macOS
 
-1. 解压 `417ssh-<版本>-win-portable.zip`。
-2. 进入解压出的 `417ssh` 文件夹。
+1. 下载 `417ssh-<版本>-mac-app.zip`。
+2. 解压得到 `417ssh.app`。
+3. 双击运行，或拖到 `Applications` 后运行。
+4. 如果 macOS 提示无法打开，在 Finder 里右键 `417ssh.app`，选择 `打开`。
+
+macOS 版本使用系统自带的 `/usr/bin/ssh` 建立隧道和终端连接。
+
+### Windows
+
+1. 下载 `417ssh-<版本>-win-portable.zip`。
+2. 解压后进入 `417ssh` 文件夹。
 3. 双击 `417ssh.exe` 运行。
 
-Windows portable 版本不需要用户安装 Python。配置文件保存在：
+Windows portable 版本不需要安装 Python。配置文件保存在：
 
 ```text
 %APPDATA%\417ssh\profiles.json
 ```
 
-普通用户不需要 clone 仓库，也不需要本地 build；GitHub Releases 里的 `.zip` 是已经构建好的成品。
+如果 Windows SmartScreen 提示未知发布者，选择 `更多信息` 后继续运行。正式分发时后续可以补代码签名来减少这个提示。
 
-## 发布方式
+## 功能
 
-在 GitHub Actions 里运行 `Build Release Packages` workflow，输入 tag。tag 需要以 `v` 开头，例如：
+- 保存多组 SSH / Jupyter 工作区配置。
+- 支持跳板机、目标主机、端口转发、密码、密钥和 SSH keepalive。
+- 一键建立本地 Jupyter 隧道，并在应用内打开 Jupyter Lab。
+- 提供内置终端，也支持打开系统原生终端。
+- 浏览远程目录，上传和下载文件或文件夹。
+- 从 GitHub Releases 检查更新并下载对应平台的 portable 包。
 
-```text
-v<版本>
-```
+## 版本与发布
 
-workflow 会自动：
+发布包由 GitHub Actions 自动构建，不需要用户自己 build。
 
-- 在 macOS runner 构建 `417ssh-<版本>-mac-app.zip`
-- 在 Windows runner 构建 `417ssh-<版本>-win-portable.zip`
-- 创建或更新 GitHub Release
-- 上传两个 `.zip` 供用户下载
-
-也可以直接 push tag 触发：
+维护者发布新版本时，推送一个 `v<版本>` tag：
 
 ```bash
 git tag v<版本>
 git push origin v<版本>
 ```
 
-发布包不要提交进源码目录，也不要放在 `assets/` 资源文件夹里；GitHub Release assets 才是给用户下载的位置。
+`Build Release Packages` workflow 会自动构建并上传：
 
-自动更新会读取 GitHub Releases。发布新版本时，把 macOS 的 `.app.zip` 和 Windows 的 portable `.zip` 上传到 release assets。
+```text
+417ssh-<版本>-mac-app.zip
+417ssh-<版本>-win-portable.zip
+SHA256SUMS.txt
+```
 
-开发者本地运行和构建说明见 `macos/README.md` 和 `windows/README.md`。
+如果 Releases 页面还没有看到最新版本，通常说明 GitHub Actions 仍在构建，或发布 workflow 失败。可以在 [Actions](https://github.com/Vonfre/417ssh/actions) 页面查看 `Build Release Packages` 的运行状态。
+
+## 项目结构
+
+```text
+macos/      原生 Swift/macOS 版本
+windows/    Windows 版本，Python + PySide6/Qt + Paramiko
+```
+
+开发者本地运行和构建说明见：
+
+- [macos/README.md](macos/README.md)
+- [windows/README.md](windows/README.md)
+
+## 注意事项
+
+- macOS 版本以 zip 分发；解压后得到的 `.app` 就是可运行应用。
+- Windows 版本以 portable zip 分发；解压后的 `.exe` 就是可运行应用。
+- SSH 密码会随连接配置保存在应用配置里；如果不填写密码，应用会使用密钥或本机 SSH agent。
+- 旧版本或外部终端里已经启动的隧道不会被自动接管；如果端口被占用，可以在应用里关闭占用后重连。
