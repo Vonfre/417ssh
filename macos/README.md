@@ -39,7 +39,7 @@ build/417ssh.app
 生成：
 
 ```text
-build/417ssh-0.2.0-mac.dmg
+build/417ssh-0.2.1-mac.dmg
 ```
 
 构建脚本会把 `logo.jpg` 复制进应用，并生成 macOS 需要的 `AppIcon.icns`。

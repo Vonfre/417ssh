@@ -57,7 +57,7 @@ winget install WiXToolset.WiXToolset
 生成文件：
 
 ```text
-dist\417ssh-0.2.0-win.msi
+dist\417ssh-0.2.1-win.msi
 ```
 
 ## 说明
