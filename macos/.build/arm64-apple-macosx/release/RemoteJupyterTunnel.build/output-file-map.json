@@ -1,0 +1,97 @@
+{
+  "": {
+    "dependencies": "/Users/zhanghuan/Documents/AI-coding/远程服务器/macos/.build/arm64-apple-macosx/release/RemoteJupyterTunnel.build/RemoteJupyterTunnel.d",
+    "object": "/Users/zhanghuan/Documents/AI-coding/远程服务器/macos/.build/arm64-apple-macosx/release/RemoteJupyterTunnel.build/RemoteJupyterTunnel.o",
+    "swift-dependencies": "/Users/zhanghuan/Documents/AI-coding/远程服务器/macos/.build/arm64-apple-macosx/release/RemoteJupyterTunnel.build/primary.swiftdeps"
+  },
+  "/Users/zhanghuan/Documents/AI-coding/远程服务器/macos/Sources/RemoteJupyterTunnel/AppLogo.swift": {
+    "object": "/Users/zhanghuan/Documents/AI-coding/远程服务器/macos/.build/arm64-apple-macosx/release/RemoteJupyterTunnel.build/AppLogo.swift.o",
+    "swiftmodule": "/Users/zhanghuan/Documents/AI-coding/远程服务器/macos/.build/arm64-apple-macosx/release/RemoteJupyterTunnel.build/AppLogo~partial.swiftmodule",
+    "swift-dependencies": "/Users/zhanghuan/Documents/AI-coding/远程服务器/macos/.build/arm64-apple-macosx/release/RemoteJupyterTunnel.build/AppLogo.swiftdeps",
+    "diagnostics": "/Users/zhanghuan/Documents/AI-coding/远程服务器/macos/.build/arm64-apple-macosx/release/RemoteJupyterTunnel.build/AppLogo.dia"
+  },
+  "/Users/zhanghuan/Documents/AI-coding/远程服务器/macos/Sources/RemoteJupyterTunnel/AppSettingsView.swift": {
+    "object": "/Users/zhanghuan/Documents/AI-coding/远程服务器/macos/.build/arm64-apple-macosx/release/RemoteJupyterTunnel.build/AppSettingsView.swift.o",
+    "swiftmodule": "/Users/zhanghuan/Documents/AI-coding/远程服务器/macos/.build/arm64-apple-macosx/release/RemoteJupyterTunnel.build/AppSettingsView~partial.swiftmodule",
+    "swift-dependencies": "/Users/zhanghuan/Documents/AI-coding/远程服务器/macos/.build/arm64-apple-macosx/release/RemoteJupyterTunnel.build/AppSettingsView.swiftdeps",
+    "diagnostics": "/Users/zhanghuan/Documents/AI-coding/远程服务器/macos/.build/arm64-apple-macosx/release/RemoteJupyterTunnel.build/AppSettingsView.dia"
+  },
+  "/Users/zhanghuan/Documents/AI-coding/远程服务器/macos/Sources/RemoteJupyterTunnel/AppVersion.swift": {
+    "object": "/Users/zhanghuan/Documents/AI-coding/远程服务器/macos/.build/arm64-apple-macosx/release/RemoteJupyterTunnel.build/AppVersion.swift.o",
+    "swiftmodule": "/Users/zhanghuan/Documents/AI-coding/远程服务器/macos/.build/arm64-apple-macosx/release/RemoteJupyterTunnel.build/AppVersion~partial.swiftmodule",
+    "swift-dependencies": "/Users/zhanghuan/Documents/AI-coding/远程服务器/macos/.build/arm64-apple-macosx/release/RemoteJupyterTunnel.build/AppVersion.swiftdeps",
+    "diagnostics": "/Users/zhanghuan/Documents/AI-coding/远程服务器/macos/.build/arm64-apple-macosx/release/RemoteJupyterTunnel.build/AppVersion.dia"
+  },
+  "/Users/zhanghuan/Documents/AI-coding/远程服务器/macos/Sources/RemoteJupyterTunnel/ContentView.swift": {
+    "object": "/Users/zhanghuan/Documents/AI-coding/远程服务器/macos/.build/arm64-apple-macosx/release/RemoteJupyterTunnel.build/ContentView.swift.o",
+    "swiftmodule": "/Users/zhanghuan/Documents/AI-coding/远程服务器/macos/.build/arm64-apple-macosx/release/RemoteJupyterTunnel.build/ContentView~partial.swiftmodule",
+    "swift-dependencies": "/Users/zhanghuan/Documents/AI-coding/远程服务器/macos/.build/arm64-apple-macosx/release/RemoteJupyterTunnel.build/ContentView.swiftdeps",
+    "diagnostics": "/Users/zhanghuan/Documents/AI-coding/远程服务器/macos/.build/arm64-apple-macosx/release/RemoteJupyterTunnel.build/ContentView.dia"
+  },
+  "/Users/zhanghuan/Documents/AI-coding/远程服务器/macos/Sources/RemoteJupyterTunnel/NativeTerminalLauncher.swift": {
+    "object": "/Users/zhanghuan/Documents/AI-coding/远程服务器/macos/.build/arm64-apple-macosx/release/RemoteJupyterTunnel.build/NativeTerminalLauncher.swift.o",
+    "swiftmodule": "/Users/zhanghuan/Documents/AI-coding/远程服务器/macos/.build/arm64-apple-macosx/release/RemoteJupyterTunnel.build/NativeTerminalLauncher~partial.swiftmodule",
+    "swift-dependencies": "/Users/zhanghuan/Documents/AI-coding/远程服务器/macos/.build/arm64-apple-macosx/release/RemoteJupyterTunnel.build/NativeTerminalLauncher.swiftdeps",
+    "diagnostics": "/Users/zhanghuan/Documents/AI-coding/远程服务器/macos/.build/arm64-apple-macosx/release/RemoteJupyterTunnel.build/NativeTerminalLauncher.dia"
+  },
+  "/Users/zhanghuan/Documents/AI-coding/远程服务器/macos/Sources/RemoteJupyterTunnel/ProfileStore.swift": {
+    "object": "/Users/zhanghuan/Documents/AI-coding/远程服务器/macos/.build/arm64-apple-macosx/release/RemoteJupyterTunnel.build/ProfileStore.swift.o",
+    "swiftmodule": "/Users/zhanghuan/Documents/AI-coding/远程服务器/macos/.build/arm64-apple-macosx/release/RemoteJupyterTunnel.build/ProfileStore~partial.swiftmodule",
+    "swift-dependencies": "/Users/zhanghuan/Documents/AI-coding/远程服务器/macos/.build/arm64-apple-macosx/release/RemoteJupyterTunnel.build/ProfileStore.swiftdeps",
+    "diagnostics": "/Users/zhanghuan/Documents/AI-coding/远程服务器/macos/.build/arm64-apple-macosx/release/RemoteJupyterTunnel.build/ProfileStore.dia"
+  },
+  "/Users/zhanghuan/Documents/AI-coding/远程服务器/macos/Sources/RemoteJupyterTunnel/RemoteFileTableView.swift": {
+    "object": "/Users/zhanghuan/Documents/AI-coding/远程服务器/macos/.build/arm64-apple-macosx/release/RemoteJupyterTunnel.build/RemoteFileTableView.swift.o",
+    "swiftmodule": "/Users/zhanghuan/Documents/AI-coding/远程服务器/macos/.build/arm64-apple-macosx/release/RemoteJupyterTunnel.build/RemoteFileTableView~partial.swiftmodule",
+    "swift-dependencies": "/Users/zhanghuan/Documents/AI-coding/远程服务器/macos/.build/arm64-apple-macosx/release/RemoteJupyterTunnel.build/RemoteFileTableView.swiftdeps",
+    "diagnostics": "/Users/zhanghuan/Documents/AI-coding/远程服务器/macos/.build/arm64-apple-macosx/release/RemoteJupyterTunnel.build/RemoteFileTableView.dia"
+  },
+  "/Users/zhanghuan/Documents/AI-coding/远程服务器/macos/Sources/RemoteJupyterTunnel/RemoteJupyterTunnelApp.swift": {
+    "object": "/Users/zhanghuan/Documents/AI-coding/远程服务器/macos/.build/arm64-apple-macosx/release/RemoteJupyterTunnel.build/RemoteJupyterTunnelApp.swift.o",
+    "swiftmodule": "/Users/zhanghuan/Documents/AI-coding/远程服务器/macos/.build/arm64-apple-macosx/release/RemoteJupyterTunnel.build/RemoteJupyterTunnelApp~partial.swiftmodule",
+    "swift-dependencies": "/Users/zhanghuan/Documents/AI-coding/远程服务器/macos/.build/arm64-apple-macosx/release/RemoteJupyterTunnel.build/RemoteJupyterTunnelApp.swiftdeps",
+    "diagnostics": "/Users/zhanghuan/Documents/AI-coding/远程服务器/macos/.build/arm64-apple-macosx/release/RemoteJupyterTunnel.build/RemoteJupyterTunnelApp.dia"
+  },
+  "/Users/zhanghuan/Documents/AI-coding/远程服务器/macos/Sources/RemoteJupyterTunnel/SFTPManager.swift": {
+    "object": "/Users/zhanghuan/Documents/AI-coding/远程服务器/macos/.build/arm64-apple-macosx/release/RemoteJupyterTunnel.build/SFTPManager.swift.o",
+    "swiftmodule": "/Users/zhanghuan/Documents/AI-coding/远程服务器/macos/.build/arm64-apple-macosx/release/RemoteJupyterTunnel.build/SFTPManager~partial.swiftmodule",
+    "swift-dependencies": "/Users/zhanghuan/Documents/AI-coding/远程服务器/macos/.build/arm64-apple-macosx/release/RemoteJupyterTunnel.build/SFTPManager.swiftdeps",
+    "diagnostics": "/Users/zhanghuan/Documents/AI-coding/远程服务器/macos/.build/arm64-apple-macosx/release/RemoteJupyterTunnel.build/SFTPManager.dia"
+  },
+  "/Users/zhanghuan/Documents/AI-coding/远程服务器/macos/Sources/RemoteJupyterTunnel/SSHProfile.swift": {
+    "object": "/Users/zhanghuan/Documents/AI-coding/远程服务器/macos/.build/arm64-apple-macosx/release/RemoteJupyterTunnel.build/SSHProfile.swift.o",
+    "swiftmodule": "/Users/zhanghuan/Documents/AI-coding/远程服务器/macos/.build/arm64-apple-macosx/release/RemoteJupyterTunnel.build/SSHProfile~partial.swiftmodule",
+    "swift-dependencies": "/Users/zhanghuan/Documents/AI-coding/远程服务器/macos/.build/arm64-apple-macosx/release/RemoteJupyterTunnel.build/SSHProfile.swiftdeps",
+    "diagnostics": "/Users/zhanghuan/Documents/AI-coding/远程服务器/macos/.build/arm64-apple-macosx/release/RemoteJupyterTunnel.build/SSHProfile.dia"
+  },
+  "/Users/zhanghuan/Documents/AI-coding/远程服务器/macos/Sources/RemoteJupyterTunnel/TerminalConsoleView.swift": {
+    "object": "/Users/zhanghuan/Documents/AI-coding/远程服务器/macos/.build/arm64-apple-macosx/release/RemoteJupyterTunnel.build/TerminalConsoleView.swift.o",
+    "swiftmodule": "/Users/zhanghuan/Documents/AI-coding/远程服务器/macos/.build/arm64-apple-macosx/release/RemoteJupyterTunnel.build/TerminalConsoleView~partial.swiftmodule",
+    "swift-dependencies": "/Users/zhanghuan/Documents/AI-coding/远程服务器/macos/.build/arm64-apple-macosx/release/RemoteJupyterTunnel.build/TerminalConsoleView.swiftdeps",
+    "diagnostics": "/Users/zhanghuan/Documents/AI-coding/远程服务器/macos/.build/arm64-apple-macosx/release/RemoteJupyterTunnel.build/TerminalConsoleView.dia"
+  },
+  "/Users/zhanghuan/Documents/AI-coding/远程服务器/macos/Sources/RemoteJupyterTunnel/TerminalManager.swift": {
+    "object": "/Users/zhanghuan/Documents/AI-coding/远程服务器/macos/.build/arm64-apple-macosx/release/RemoteJupyterTunnel.build/TerminalManager.swift.o",
+    "swiftmodule": "/Users/zhanghuan/Documents/AI-coding/远程服务器/macos/.build/arm64-apple-macosx/release/RemoteJupyterTunnel.build/TerminalManager~partial.swiftmodule",
+    "swift-dependencies": "/Users/zhanghuan/Documents/AI-coding/远程服务器/macos/.build/arm64-apple-macosx/release/RemoteJupyterTunnel.build/TerminalManager.swiftdeps",
+    "diagnostics": "/Users/zhanghuan/Documents/AI-coding/远程服务器/macos/.build/arm64-apple-macosx/release/RemoteJupyterTunnel.build/TerminalManager.dia"
+  },
+  "/Users/zhanghuan/Documents/AI-coding/远程服务器/macos/Sources/RemoteJupyterTunnel/TunnelManager.swift": {
+    "object": "/Users/zhanghuan/Documents/AI-coding/远程服务器/macos/.build/arm64-apple-macosx/release/RemoteJupyterTunnel.build/TunnelManager.swift.o",
+    "swiftmodule": "/Users/zhanghuan/Documents/AI-coding/远程服务器/macos/.build/arm64-apple-macosx/release/RemoteJupyterTunnel.build/TunnelManager~partial.swiftmodule",
+    "swift-dependencies": "/Users/zhanghuan/Documents/AI-coding/远程服务器/macos/.build/arm64-apple-macosx/release/RemoteJupyterTunnel.build/TunnelManager.swiftdeps",
+    "diagnostics": "/Users/zhanghuan/Documents/AI-coding/远程服务器/macos/.build/arm64-apple-macosx/release/RemoteJupyterTunnel.build/TunnelManager.dia"
+  },
+  "/Users/zhanghuan/Documents/AI-coding/远程服务器/macos/Sources/RemoteJupyterTunnel/UpdateManager.swift": {
+    "object": "/Users/zhanghuan/Documents/AI-coding/远程服务器/macos/.build/arm64-apple-macosx/release/RemoteJupyterTunnel.build/UpdateManager.swift.o",
+    "swiftmodule": "/Users/zhanghuan/Documents/AI-coding/远程服务器/macos/.build/arm64-apple-macosx/release/RemoteJupyterTunnel.build/UpdateManager~partial.swiftmodule",
+    "swift-dependencies": "/Users/zhanghuan/Documents/AI-coding/远程服务器/macos/.build/arm64-apple-macosx/release/RemoteJupyterTunnel.build/UpdateManager.swiftdeps",
+    "diagnostics": "/Users/zhanghuan/Documents/AI-coding/远程服务器/macos/.build/arm64-apple-macosx/release/RemoteJupyterTunnel.build/UpdateManager.dia"
+  },
+  "/Users/zhanghuan/Documents/AI-coding/远程服务器/macos/Sources/RemoteJupyterTunnel/WebView.swift": {
+    "object": "/Users/zhanghuan/Documents/AI-coding/远程服务器/macos/.build/arm64-apple-macosx/release/RemoteJupyterTunnel.build/WebView.swift.o",
+    "swiftmodule": "/Users/zhanghuan/Documents/AI-coding/远程服务器/macos/.build/arm64-apple-macosx/release/RemoteJupyterTunnel.build/WebView~partial.swiftmodule",
+    "swift-dependencies": "/Users/zhanghuan/Documents/AI-coding/远程服务器/macos/.build/arm64-apple-macosx/release/RemoteJupyterTunnel.build/WebView.swiftdeps",
+    "diagnostics": "/Users/zhanghuan/Documents/AI-coding/远程服务器/macos/.build/arm64-apple-macosx/release/RemoteJupyterTunnel.build/WebView.dia"
+  }
+}
