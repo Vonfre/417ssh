@@ -7,9 +7,11 @@ struct ContentView: View {
     @EnvironmentObject private var store: ProfileStore
     @EnvironmentObject private var tunnel: TunnelManager
     @EnvironmentObject private var terminal: TerminalManager
+    @EnvironmentObject private var updateManager: UpdateManager
 
     @State private var reloadToken = 0
     @State private var editingProfileID: UUID?
+    @State private var isShowingSettings = false
 
     var body: some View {
         NavigationSplitView {
@@ -62,6 +64,10 @@ struct ContentView: View {
                 )
                 .frame(width: 420, height: 260)
             }
+        }
+        .sheet(isPresented: $isShowingSettings) {
+            AppSettingsView()
+                .environmentObject(updateManager)
         }
     }
 
@@ -162,7 +168,7 @@ struct ContentView: View {
                 .help("删除当前配置")
 
                 Button {
-                    NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
+                    isShowingSettings = true
                 } label: {
                     Label("设置", systemImage: "gearshape")
                 }

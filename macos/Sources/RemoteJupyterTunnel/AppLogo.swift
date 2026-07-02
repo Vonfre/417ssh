@@ -31,7 +31,7 @@ struct AppLogo: View {
 
     var body: some View {
         Group {
-            if let logoImage = AppAssets.logoImage {
+            if let logoImage = AppAssets.appIconImage {
                 Image(nsImage: logoImage)
                     .resizable()
                     .scaledToFill()

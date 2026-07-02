@@ -10,11 +10,30 @@ if (Get-Command py -ErrorAction SilentlyContinue) {
 
 & $python @pythonArgs -m pip install -r requirements-build.txt
 
+$iconPath = Join-Path $PSScriptRoot "assets\logo.ico"
+if (-not (Test-Path $iconPath)) {
+    $iconScript = @'
+from pathlib import Path
+from PIL import Image
+
+root = Path(__file__).resolve().parents[1]
+source = root / "assets" / "logo.jpg"
+target = root / "assets" / "logo.ico"
+image = Image.open(source).convert("RGBA")
+image.save(target, sizes=[(16, 16), (32, 32), (48, 48), (128, 128), (256, 256)])
+'@
+    $scriptPath = Join-Path $PSScriptRoot "build\make_ico.py"
+    New-Item -ItemType Directory -Force -Path (Split-Path $scriptPath) | Out-Null
+    Set-Content -Path $scriptPath -Value $iconScript -Encoding UTF8
+    & $python @pythonArgs $scriptPath
+}
+
 $pyInstallerArgs = @(
     "--noconsole",
     "--onefile",
     "--clean",
     "--name", "417ssh",
+    "--icon", "assets\logo.ico",
     "--collect-all", "PySide6",
     "--hidden-import", "PySide6.QtWebEngineWidgets",
     "--add-data", "assets\logo.jpg;assets",

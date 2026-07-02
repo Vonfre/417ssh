@@ -1,6 +1,7 @@
 import SwiftUI
 
 struct AppSettingsView: View {
+    @Environment(\.dismiss) private var dismiss
     @EnvironmentObject private var updateManager: UpdateManager
 
     var body: some View {
@@ -16,12 +17,25 @@ struct AppSettingsView: View {
                 }
 
                 Spacer()
+
+                Button("完成") {
+                    dismiss()
+                }
             }
 
             Divider()
 
             VStack(alignment: .leading, spacing: 12) {
                 Toggle("启动时自动检查 GitHub 更新", isOn: $updateManager.autoCheckEnabled)
+
+                VStack(alignment: .leading, spacing: 8) {
+                    SettingsInfoRow(title: "当前版本", value: AppVersion.current)
+                    SettingsInfoRow(title: "最新版本", value: latestVersionText)
+                    SettingsInfoRow(title: "更新包", value: updateAssetText)
+                }
+                .padding(12)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(Color(nsColor: .textBackgroundColor), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
 
                 HStack(spacing: 10) {
                     SettingsStatusDot(text: updateManager.status.label, color: statusColor)
@@ -61,7 +75,7 @@ struct AppSettingsView: View {
                     }
                     .disabled(isBusy)
 
-                    Button("下载并打开更新包") {
+                    Button(downloadButtonTitle) {
                         Task {
                             await updateManager.downloadAndOpenInstaller()
                         }
@@ -74,7 +88,7 @@ struct AppSettingsView: View {
                 }
             }
 
-            Text("macOS 版会下载 GitHub Release 中的 .app.zip 并打开它；解压后可把 417ssh.app 拖到 Applications。若要完全静默替换，后续需要接入签名、notarization 和 Sparkle。")
+            Text("检查更新会读取 GitHub Releases，并显示当前版本、最新版本和对应的 macOS 更新包。下载后会打开 zip，解压后替换现有 417ssh.app 即可。若要完全静默替换，后续需要接入签名、notarization 和 Sparkle。")
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -82,7 +96,31 @@ struct AppSettingsView: View {
             Spacer()
         }
         .padding(20)
-        .frame(width: 560, height: 420)
+        .frame(width: 580, height: 480)
+    }
+
+    private var latestVersionText: String {
+        if let latestRelease = updateManager.latestRelease {
+            return latestRelease.versionString
+        }
+        return "尚未检查"
+    }
+
+    private var updateAssetText: String {
+        if let asset = updateManager.latestRelease?.macUpdateAsset {
+            return asset.name
+        }
+        if updateManager.latestRelease != nil {
+            return "未找到 macOS 更新包"
+        }
+        return "尚未检查"
+    }
+
+    private var downloadButtonTitle: String {
+        if case .updateAvailable = updateManager.status {
+            return "下载新版"
+        }
+        return "下载并打开更新包"
     }
 
     private var isBusy: Bool {
@@ -113,6 +151,25 @@ struct AppSettingsView: View {
             return .blue
         case .failed:
             return .red
+        }
+    }
+}
+
+private struct SettingsInfoRow: View {
+    let title: String
+    let value: String
+
+    var body: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 10) {
+            Text(title)
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+                .frame(width: 64, alignment: .leading)
+            Text(value)
+                .font(.caption)
+                .textSelection(.enabled)
+                .lineLimit(2)
+            Spacer(minLength: 0)
         }
     }
 }

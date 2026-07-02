@@ -509,7 +509,7 @@ class AppSettingsDialog(QDialog):
         self.latest_release = latest_release
         self.update_asset = update_asset
         self.setWindowTitle("417ssh 设置")
-        self.resize(560, 420)
+        self.resize(580, 480)
         self.setMinimumWidth(520)
 
         layout = QVBoxLayout(self)
@@ -532,6 +532,20 @@ class AppSettingsDialog(QDialog):
         self.auto_check.setChecked(bool(self.settings.get("auto_check_updates", True)))
         self.auto_check.toggled.connect(self.on_auto_check_toggled)
         layout.addWidget(self.auto_check)
+
+        info_box = QFrame()
+        info_box.setStyleSheet("background: #f6f8f8; border: 1px solid #dfe5e3; border-radius: 8px;")
+        info_layout = QVBoxLayout(info_box)
+        info_layout.setContentsMargins(12, 10, 12, 10)
+        info_layout.setSpacing(6)
+        self.current_version_label = QLabel(f"当前版本：{CURRENT_VERSION}")
+        self.latest_version_label = QLabel("最新版本：尚未检查")
+        self.update_asset_label = QLabel("更新包：尚未检查")
+        for label in (self.current_version_label, self.latest_version_label, self.update_asset_label):
+            label.setWordWrap(True)
+            label.setStyleSheet("color: #38423f; font-size: 12px;")
+            info_layout.addWidget(label)
+        layout.addWidget(info_box)
 
         self.status_label = QLabel()
         self.status_label.setWordWrap(True)
@@ -573,6 +587,16 @@ class AppSettingsDialog(QDialog):
         self.latest_release = latest_release
         self.update_asset = update_asset
         self.status_label.setText(update_status)
+        self.latest_version_label.setText(
+            f"最新版本：{release_version(latest_release)}" if latest_release else "最新版本：尚未检查"
+        )
+        if update_asset:
+            self.update_asset_label.setText(f"更新包：{update_asset.get('name', '未知')}")
+        elif latest_release:
+            self.update_asset_label.setText("更新包：未找到 Windows portable .zip 更新包")
+        else:
+            self.update_asset_label.setText("更新包：尚未检查")
+        self.install_button.setText("下载新版" if update_asset is not None and "发现新版本" in update_status else "下载并打开更新包")
         self.install_button.setEnabled(update_asset is not None and "发现新版本" in update_status)
         self.check_button.setEnabled("正在" not in update_status)
 

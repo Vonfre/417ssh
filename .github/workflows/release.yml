@@ -43,6 +43,12 @@ jobs:
           sw_vers
           xcodebuild -version
           swift --version
+          python3 --version
+
+      - name: Install icon build dependency
+        shell: bash
+        run: |
+          python3 -m pip install --user Pillow
 
       - name: Resolve version
         id: version

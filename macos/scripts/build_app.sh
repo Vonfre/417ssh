@@ -89,7 +89,7 @@ $ICON_PLIST_ENTRY
     <key>CFBundleShortVersionString</key>
     <string>$VERSION</string>
     <key>CFBundleVersion</key>
-    <string>3</string>
+    <string>$VERSION</string>
     <key>LSMinimumSystemVersion</key>
     <string>13.0</string>
     <key>NSHighResolutionCapable</key>
