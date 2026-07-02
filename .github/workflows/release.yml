@@ -179,25 +179,47 @@ jobs:
           cat release-assets/SHA256SUMS.txt
 
       - name: Publish release assets
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ steps.version.outputs.tag }}
-          target_commitish: ${{ github.sha }}
-          name: 417ssh ${{ steps.version.outputs.version }}
-          body: |
-            417ssh ${{ steps.version.outputs.version }} portable packages.
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.version.outputs.tag }}
+          VERSION: ${{ steps.version.outputs.version }}
+          PRERELEASE: ${{ steps.version.outputs.prerelease }}
+        run: |
+          set -euo pipefail
 
-            Downloads:
-            - macOS: `417ssh-${{ steps.version.outputs.version }}-mac-app.zip`
-            - Windows: `417ssh-${{ steps.version.outputs.version }}-win-portable.zip`
+          cat > release-notes.md <<NOTES
+          417ssh $VERSION portable packages.
 
-            macOS: unzip, drag `417ssh.app` to Applications if desired, then open it once from Finder with right click -> Open if Gatekeeper blocks it.
-            Windows: unzip the folder and run `417ssh.exe`.
-          prerelease: ${{ steps.version.outputs.prerelease }}
-          make_latest: true
-          overwrite_files: true
-          fail_on_unmatched_files: true
-          files: |
-            release-assets/417ssh-${{ steps.version.outputs.version }}-mac-app.zip
-            release-assets/417ssh-${{ steps.version.outputs.version }}-win-portable.zip
-            release-assets/SHA256SUMS.txt
+          Downloads:
+          - macOS: \`417ssh-$VERSION-mac-app.zip\`
+          - Windows: \`417ssh-$VERSION-win-portable.zip\`
+
+          macOS: unzip, drag \`417ssh.app\` to Applications if desired, then open it once from Finder with right click -> Open if Gatekeeper blocks it.
+          Windows: unzip the folder and run \`417ssh.exe\`.
+          NOTES
+
+          release_args=(
+            --repo "$GITHUB_REPOSITORY"
+            --title "417ssh $VERSION"
+            --notes-file release-notes.md
+          )
+
+          if [[ "$PRERELEASE" == "true" ]]; then
+            release_args+=(--prerelease)
+          else
+            release_args+=(--latest)
+          fi
+
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release edit "$TAG" "${release_args[@]}"
+          else
+            gh release create "$TAG" "${release_args[@]}"
+          fi
+
+          gh release upload "$TAG" \
+            "release-assets/417ssh-$VERSION-mac-app.zip" \
+            "release-assets/417ssh-$VERSION-win-portable.zip" \
+            "release-assets/SHA256SUMS.txt" \
+            --repo "$GITHUB_REPOSITORY" \
+            --clobber
