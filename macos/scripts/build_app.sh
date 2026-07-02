@@ -10,6 +10,7 @@ APP_DIR="$BUILD_DIR/$APP_NAME.app"
 EXECUTABLE="$APP_DIR/Contents/MacOS/RemoteJupyterTunnel"
 RESOURCES_DIR="$APP_DIR/Contents/Resources"
 ORIGINAL_HOME="${HOME:-}"
+ICON_PLIST_ENTRY=""
 
 cd "$ROOT_DIR"
 
@@ -19,7 +20,7 @@ export XDG_CACHE_HOME="$ROOT_DIR/.build/cache"
 export SWIFTPM_HOME="$ROOT_DIR/.build/swiftpm-home"
 export CLANG_MODULE_CACHE_PATH="$ROOT_DIR/.build/module-cache"
 
-swift build -c release
+swift build --disable-sandbox -c release
 
 rm -rf "$APP_DIR"
 mkdir -p "$APP_DIR/Contents/MacOS" "$RESOURCES_DIR"
@@ -55,7 +56,13 @@ if [[ -f "$ROOT_DIR/logo.jpg" ]]; then
     sips -s format png -z 512 512 "$ICON_SOURCE" --out "$ICONSET_DIR/icon_256x256@2x.png" >/dev/null
     sips -s format png -z 512 512 "$ICON_SOURCE" --out "$ICONSET_DIR/icon_512x512.png" >/dev/null
     sips -s format png -z 1024 1024 "$ICON_SOURCE" --out "$ICONSET_DIR/icon_512x512@2x.png" >/dev/null
-    iconutil -c icns "$ICONSET_DIR" -o "$RESOURCES_DIR/AppIcon.icns"
+    if iconutil -c icns "$ICONSET_DIR" -o "$RESOURCES_DIR/AppIcon.icns"; then
+      ICON_PLIST_ENTRY=$'    <key>CFBundleIconFile</key>\n    <string>AppIcon.icns</string>'
+    elif command -v python3 >/dev/null 2>&1 && HOME="$ORIGINAL_HOME" python3 "$ROOT_DIR/scripts/make_app_icon.py" "$ROOT_DIR/logo.jpg" "$RESOURCES_DIR/AppIcon.icns"; then
+      ICON_PLIST_ENTRY=$'    <key>CFBundleIconFile</key>\n    <string>AppIcon.icns</string>'
+    else
+      echo "warning: failed to create AppIcon.icns; continuing without app icon" >&2
+    fi
   fi
 fi
 
@@ -76,8 +83,7 @@ cat > "$APP_DIR/Contents/Info.plist" <<PLIST
     <string>$APP_NAME</string>
     <key>CFBundleDisplayName</key>
     <string>$APP_NAME</string>
-    <key>CFBundleIconFile</key>
-    <string>AppIcon.icns</string>
+$ICON_PLIST_ENTRY
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>

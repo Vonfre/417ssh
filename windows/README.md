@@ -10,7 +10,7 @@
 
 ## 下载
 
-- [下载最新版 Windows MSI](https://github.com/Vonfre/417ssh/releases/latest/download/417ssh-0.2.2-win.msi)
+- [下载最新版 Windows MSI](https://github.com/Vonfre/417ssh/releases/latest/download/417ssh-0.2.3-win.msi)
 - [打开 GitHub Releases 下载页](https://github.com/Vonfre/417ssh/releases)
 
 ## 运行
@@ -62,7 +62,7 @@ winget install WiXToolset.WiXToolset
 生成文件：
 
 ```text
-dist\417ssh-0.2.2-win.msi
+dist\417ssh-0.2.3-win.msi
 ```
 
 ## 说明

@@ -51,9 +51,17 @@ except Exception:  # pragma: no cover - optional runtime fallback
 
 
 APP_NAME = "417ssh"
-APP_DIR = Path(__file__).resolve().parents[1]
+
+
+def bundled_root() -> Path:
+    if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
+        return Path(sys._MEIPASS)
+    return Path(__file__).resolve().parents[1]
+
+
+APP_DIR = bundled_root()
 ASSETS_DIR = APP_DIR / "assets"
-CORE_PATH = Path(__file__).with_name("417ssh_windows.py")
+CORE_PATH = APP_DIR / "417ssh_windows.py" if getattr(sys, "frozen", False) else Path(__file__).with_name("417ssh_windows.py")
 
 
 def app_version() -> str:

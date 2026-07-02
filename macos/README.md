@@ -16,7 +16,7 @@ http://127.0.0.1:8003/lab/tree/work
 
 ## 下载
 
-- [下载最新版 macOS DMG](https://github.com/Vonfre/417ssh/releases/latest/download/417ssh-0.2.2-mac.dmg)
+- [下载最新版 macOS DMG](https://github.com/Vonfre/417ssh/releases/latest/download/417ssh-0.2.3-mac.dmg)
 - [打开 GitHub Releases 下载页](https://github.com/Vonfre/417ssh/releases)
 
 ## 构建
@@ -44,7 +44,7 @@ build/417ssh.app
 生成：
 
 ```text
-build/417ssh-0.2.2-mac.dmg
+build/417ssh-0.2.3-mac.dmg
 ```
 
 构建脚本会把 `logo.jpg` 复制进应用，并生成 macOS 需要的 `AppIcon.icns`。

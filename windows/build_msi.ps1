@@ -16,6 +16,10 @@ if (-not (Test-Path $exePath)) {
     & "$PSScriptRoot\build_windows.ps1"
 }
 
+if (-not (Test-Path $exePath)) {
+    throw "未找到 PyInstaller 输出：$exePath"
+}
+
 $python = "python"
 $pythonArgs = @()
 if (Get-Command py -ErrorAction SilentlyContinue) {
@@ -40,11 +44,16 @@ image.save(target, sizes=[(16, 16), (32, 32), (48, 48), (128, 128), (256, 256)])
     & $python @pythonArgs $scriptPath
 }
 
+if (-not (Test-Path $iconPath)) {
+    throw "未找到应用图标：$iconPath"
+}
+
 if (-not (Get-Command wix -ErrorAction SilentlyContinue)) {
     throw "未找到 WiX Toolset v4。请先安装：winget install WiXToolset.WiXToolset"
 }
 
 New-Item -ItemType Directory -Force -Path $buildDir | Out-Null
+New-Item -ItemType Directory -Force -Path (Split-Path $msiPath) | Out-Null
 
 $wxs = @"
 <Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
@@ -56,7 +65,7 @@ $wxs = @"
     Scope="perUser">
     <MajorUpgrade DowngradeErrorMessage="已经安装了更新版本的 $appName。" />
     <MediaTemplate EmbedCab="yes" />
-    <Icon Id="AppIcon.ico" SourceFile="$iconPath" />
+    <Icon Id="AppIcon" SourceFile="$iconPath" />
 
     <StandardDirectory Id="LocalAppDataFolder">
       <Directory Id="INSTALLFOLDER" Name="$appName">
@@ -67,7 +76,7 @@ $wxs = @"
               Directory="ApplicationProgramsFolder"
               Name="$appName"
               WorkingDirectory="INSTALLFOLDER"
-              Icon="AppIcon.ico"
+              Icon="AppIcon"
               Advertise="no" />
           </File>
         </Component>
@@ -99,6 +108,10 @@ $wxs = @"
 
 Set-Content -Path $wxsPath -Value $wxs -Encoding UTF8
 wix build $wxsPath -o $msiPath
+
+if (-not (Test-Path $msiPath)) {
+    throw "WiX did not create MSI: $msiPath"
+}
 
 Write-Host ""
 Write-Host "Built: $msiPath"
