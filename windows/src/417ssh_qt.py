@@ -51,13 +51,24 @@ except Exception:  # pragma: no cover - optional runtime fallback
 
 
 APP_NAME = "417ssh"
-CURRENT_VERSION = "0.2.0"
-GITHUB_REPO = "Vonfre/417ssh"
-LATEST_RELEASE_API = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
-RELEASES_URL = f"https://github.com/{GITHUB_REPO}/releases"
 APP_DIR = Path(__file__).resolve().parents[1]
 ASSETS_DIR = APP_DIR / "assets"
 CORE_PATH = Path(__file__).with_name("417ssh_windows.py")
+
+
+def app_version() -> str:
+    version_file = APP_DIR / "VERSION"
+    if version_file.exists():
+        text = version_file.read_text(encoding="utf-8").strip()
+        if text:
+            return text
+    return "0.2.0"
+
+
+CURRENT_VERSION = app_version()
+GITHUB_REPO = "Vonfre/417ssh"
+LATEST_RELEASE_API = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
+RELEASES_URL = f"https://github.com/{GITHUB_REPO}/releases"
 
 
 def load_core_module():

@@ -24,6 +24,10 @@ run_windows.bat
 
 ## 打包 exe
 
+推荐使用仓库根目录的 GitHub Actions workflow `Build Release Installers` 生成并上传 MSI。
+
+本地调试 exe：
+
 在 PowerShell 里运行：
 
 ```powershell

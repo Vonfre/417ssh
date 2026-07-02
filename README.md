@@ -7,6 +7,28 @@ macos/      原 Swift/macOS 版本，包含已有 417ssh.app 构建产物
 windows/    Windows 版本，Python + PySide6/Qt + Paramiko
 ```
 
+## 推荐发布方式
+
+在 GitHub Actions 里运行 `Build Release Installers` workflow，输入 tag，例如：
+
+```text
+v0.2.0
+```
+
+workflow 会自动：
+
+- 在 macOS runner 构建 `417ssh-0.2.0-mac.dmg`
+- 在 Windows runner 构建 `417ssh-0.2.0-win.msi`
+- 创建或更新 GitHub Release
+- 上传 `.dmg` 和 `.msi` 供用户直接下载
+
+也可以直接 push tag 触发：
+
+```bash
+git tag v0.2.0
+git push origin v0.2.0
+```
+
 ## macOS
 
 进入 `macos/`：

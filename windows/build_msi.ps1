@@ -1,7 +1,8 @@
 $ErrorActionPreference = "Stop"
 Set-Location $PSScriptRoot
 
-$version = "0.2.0"
+$versionFile = Join-Path $PSScriptRoot "VERSION"
+$version = if ($env:VERSION) { $env:VERSION } elseif (Test-Path $versionFile) { (Get-Content $versionFile -Raw).Trim() } else { "0.2.0" }
 $appName = "417ssh"
 $manufacturer = "Vonfre"
 $upgradeCode = "1F9AB05B-46B8-46E0-A7FB-4170E7F0417F"

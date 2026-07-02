@@ -16,6 +16,10 @@ http://127.0.0.1:8003/lab/tree/work
 
 ## 构建
 
+推荐使用仓库根目录的 GitHub Actions workflow `Build Release Installers` 生成并上传 DMG。
+
+本地构建：
+
 ```bash
 ./scripts/build_app.sh
 ```
