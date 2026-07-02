@@ -26,3 +26,10 @@ __pycache__/
 .env
 .venv/
 node_modules/
+
+# Swift / Xcode build cache
+.build/
+**/.build/
+
+# macOS
+.DS_Store
