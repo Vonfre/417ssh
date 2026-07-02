@@ -1,0 +1,170 @@
+import Combine
+import Foundation
+
+@MainActor
+final class ProfileStore: ObservableObject {
+    @Published private(set) var profiles: [SSHProfile]
+    @Published var selectedProfileID: SSHProfile.ID?
+
+    private let defaults: UserDefaults
+    private let profilesKey = "profiles.v1"
+    private let selectedProfileKey = "selectedProfileID.v1"
+    private let node12GFlagMigrationKey = "migrations.node12GFlag.v1"
+    private let node12ManualCommandMigrationKey = "migrations.node12ManualCommand.v2"
+
+    init(defaults: UserDefaults = .standard) {
+        self.defaults = defaults
+
+        if
+            let data = defaults.data(forKey: profilesKey),
+            let decodedProfiles = try? JSONDecoder().decode([SSHProfile].self, from: data),
+            !decodedProfiles.isEmpty
+        {
+            profiles = decodedProfiles
+        } else {
+            profiles = [.sample]
+        }
+
+        migrateNode12ProfileToManualCommand()
+        migrateNode12ProfileCommandFlags()
+
+        if
+            let selectedString = defaults.string(forKey: selectedProfileKey),
+            let selectedID = UUID(uuidString: selectedString),
+            profiles.contains(where: { $0.id == selectedID })
+        {
+            selectedProfileID = selectedID
+        } else {
+            selectedProfileID = profiles.first?.id
+        }
+    }
+
+    var selectedProfile: SSHProfile? {
+        guard let selectedProfileID else { return profiles.first }
+        return profiles.first { $0.id == selectedProfileID }
+    }
+
+    func profiles(for kind: WorkspaceKind) -> [SSHProfile] {
+        profiles.filter { $0.workspaceKind == kind }
+    }
+
+    func binding(for profile: SSHProfile) -> BindingBox<SSHProfile> {
+        BindingBox(
+            get: { [weak self] in
+                self?.profiles.first(where: { $0.id == profile.id }) ?? profile
+            },
+            set: { [weak self] updatedProfile in
+                self?.updateProfile(updatedProfile)
+            }
+        )
+    }
+
+    func addProfile(kind: WorkspaceKind = .jupyter) {
+        let kindCount = profiles.filter { $0.workspaceKind == kind }.count
+        var profile = SSHProfile.blank(number: kindCount + 1, kind: kind)
+        profile.name = nextProfileName(base: profile.name)
+        profiles.append(profile)
+        selectedProfileID = profile.id
+        save()
+    }
+
+    func duplicateSelectedProfile() {
+        guard var profile = selectedProfile else { return }
+        profile.id = UUID()
+        profile.name = nextProfileName(base: "\(profile.name) 副本")
+        profiles.append(profile)
+        selectedProfileID = profile.id
+        save()
+    }
+
+    func deleteSelectedProfile() {
+        guard let selectedProfileID else { return }
+        profiles.removeAll { $0.id == selectedProfileID }
+
+        if profiles.isEmpty {
+            profiles = [.sample]
+        }
+
+        self.selectedProfileID = profiles.first?.id
+        save()
+    }
+
+    func updateProfile(_ profile: SSHProfile) {
+        guard let index = profiles.firstIndex(where: { $0.id == profile.id }) else { return }
+        profiles[index] = profile
+        save()
+    }
+
+    private func nextProfileName(base: String) -> String {
+        var candidate = base
+        var suffix = 2
+        let existingNames = Set(profiles.map(\.name))
+
+        while existingNames.contains(candidate) {
+            candidate = "\(base) \(suffix)"
+            suffix += 1
+        }
+
+        return candidate
+    }
+
+    private func migrateNode12ProfileToManualCommand() {
+        guard !defaults.bool(forKey: node12GFlagMigrationKey) else { return }
+
+        var changed = false
+        for index in profiles.indices {
+            guard profiles[index].matchesDefaultNode12Tunnel else { continue }
+            profiles[index].allowRemoteLocalPortAccess = true
+            changed = true
+        }
+
+        defaults.set(true, forKey: node12GFlagMigrationKey)
+        if changed {
+            save()
+        }
+    }
+
+    private func migrateNode12ProfileCommandFlags() {
+        guard !defaults.bool(forKey: node12ManualCommandMigrationKey) else { return }
+
+        var changed = false
+        for index in profiles.indices {
+            guard profiles[index].matchesDefaultNode12Tunnel else { continue }
+            profiles[index].compressionEnabled = true
+            profiles[index].verboseLogging = true
+            profiles[index].allowRemoteLocalPortAccess = true
+            changed = true
+        }
+
+        defaults.set(true, forKey: node12ManualCommandMigrationKey)
+        if changed {
+            save()
+        }
+    }
+
+    private func save() {
+        if let data = try? JSONEncoder().encode(profiles) {
+            defaults.set(data, forKey: profilesKey)
+        }
+
+        defaults.set(selectedProfileID?.uuidString, forKey: selectedProfileKey)
+    }
+}
+
+struct BindingBox<Value> {
+    var get: () -> Value
+    var set: (Value) -> Void
+}
+
+private extension SSHProfile {
+    var matchesDefaultNode12Tunnel: Bool {
+        localPort == 8003
+            && remoteHost == "node12"
+            && remotePort == 8003
+            && jumpUser == "zhanghuan"
+            && jumpHost == "www.chenlianfu.com"
+            && jumpPort == 52922
+            && targetUser == "zhanghuan"
+            && targetHost == "node12"
+    }
+}
