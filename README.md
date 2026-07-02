@@ -22,12 +22,22 @@ workflow 会自动：
 - 创建或更新 GitHub Release
 - 上传 `.dmg` 和 `.msi` 供用户直接下载
 
+安装包不要提交进源码目录，也不要放在 `assets/` 或资源文件夹里；GitHub Release assets 才是给用户下载安装包的位置。
+
 也可以直接 push tag 触发：
 
 ```bash
 git tag v0.2.0
 git push origin v0.2.0
 ```
+
+如果 GitHub Actions 临时失败，也可以本地生成安装包后手动上传：
+
+1. 打开 `https://github.com/Vonfre/417ssh/releases`
+2. 点 `Draft a new release`
+3. 选择或创建 tag，例如 `v0.2.0`
+4. 上传 `417ssh-0.2.0-mac.dmg` 和 `417ssh-0.2.0-win.msi`
+5. 发布 release
 
 ## macOS
 
