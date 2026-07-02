@@ -34,6 +34,8 @@ Windows portable 版本不需要用户安装 Python。配置文件保存在：
 %APPDATA%\417ssh\profiles.json
 ```
 
+普通用户不需要 clone 仓库，也不需要本地 build；GitHub Releases 里的 `.zip` 是已经构建好的成品。
+
 ## 发布方式
 
 在 GitHub Actions 里运行 `Build Release Packages` workflow，输入 tag。tag 需要以 `v` 开头，例如：
@@ -58,38 +60,6 @@ git push origin v<版本>
 
 发布包不要提交进源码目录，也不要放在 `assets/` 资源文件夹里；GitHub Release assets 才是给用户下载的位置。
 
-## 本地构建
-
-macOS：
-
-```bash
-cd macos
-./scripts/build_app.sh
-./scripts/build_zip.sh
-```
-
-生成：
-
-```text
-macos/build/417ssh.app
-macos/build/417ssh-<版本>-mac-app.zip
-```
-
-Windows：
-
-```powershell
-cd windows
-.\build_windows.ps1
-.\build_portable.ps1
-```
-
-生成：
-
-```text
-windows\dist\417ssh.exe
-windows\dist\417ssh-<版本>-win-portable.zip
-```
-
 自动更新会读取 GitHub Releases。发布新版本时，把 macOS 的 `.app.zip` 和 Windows 的 portable `.zip` 上传到 release assets。
 
-更细的平台说明见 `macos/README.md` 和 `windows/README.md`。
+开发者本地运行和构建说明见 `macos/README.md` 和 `windows/README.md`。
