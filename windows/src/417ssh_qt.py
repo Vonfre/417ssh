@@ -76,7 +76,7 @@ def app_version() -> str:
         text = version_file.read_text(encoding="utf-8").strip()
         if text:
             return text
-    return "0.3.6"
+    return "0.3.7"
 
 
 CURRENT_VERSION = app_version()
@@ -1146,32 +1146,40 @@ class SFTPPaneWidget(QFrame):
     error = Signal(str)
     status_changed = Signal(str)
 
-    def __init__(self, controller: "MainWindow", state: SFTPPaneState, can_close: bool, on_close: Callable[[SFTPPaneState], None]) -> None:
+    def __init__(self, controller: "MainWindow", state: SFTPPaneState, title: str) -> None:
         super().__init__()
         self.controller = controller
         self.state = state
-        self.on_close = on_close
+        self.title = title
         self.setStyleSheet("QFrame { background: white; border: 1px solid #d1d8d6; border-radius: 8px; }")
-        self.build_ui(can_close)
+        self.build_ui()
         self.done.connect(self.handle_done)
         self.error.connect(self.handle_error)
         self.status_changed.connect(self.handle_status)
         QTimer.singleShot(0, self.refresh_if_needed)
 
-    def build_ui(self, can_close: bool) -> None:
+    def build_ui(self) -> None:
         layout = QVBoxLayout(self)
         layout.setContentsMargins(8, 8, 8, 8)
         layout.setSpacing(6)
 
         top = QHBoxLayout()
         top.setSpacing(6)
+        pane_title = QLabel(self.title)
+        pane_title.setStyleSheet("color: #6b7280; font-size: 12px; font-weight: 700;")
+        top.addWidget(pane_title)
+
         self.profile_combo = QComboBox()
-        for profile in self.controller.store.profiles:
+        source_profiles = self.controller.sftp_source_profiles()
+        for profile in source_profiles:
             self.profile_combo.addItem(profile.name, profile.id)
-        if self.state.profile_id is None and self.controller.store.profiles:
-            self.state.profile_id = self.controller.store.profiles[0].id
+        if self.state.profile_id is None and source_profiles:
+            self.state.profile_id = source_profiles[0].id
         if self.state.profile_id is not None:
             index = self.profile_combo.findData(self.state.profile_id)
+            if index < 0 and source_profiles:
+                self.state.profile_id = source_profiles[0].id
+                index = 0
             self.profile_combo.setCurrentIndex(max(0, index))
         self.profile_combo.currentIndexChanged.connect(lambda _index: self.change_profile())
         top.addWidget(self.profile_combo, 1)
@@ -1185,12 +1193,6 @@ class SFTPPaneWidget(QFrame):
         refresh.clicked.connect(lambda: self.refresh())
         top.addWidget(refresh)
 
-        close = QToolButton()
-        close.setText("关闭")
-        close.setToolTip("关闭面板")
-        close.setEnabled(can_close)
-        close.clicked.connect(lambda: self.on_close(self.state))
-        top.addWidget(close)
         layout.addLayout(top)
 
         path_row = QHBoxLayout()
@@ -1249,7 +1251,7 @@ class SFTPPaneWidget(QFrame):
 
     def current_profile(self) -> SSHProfile | None:
         profile_id = self.state.profile_id
-        return next((profile for profile in self.controller.store.profiles if profile.id == profile_id), None)
+        return next((profile for profile in self.controller.sftp_source_profiles() if profile.id == profile_id), None)
 
     def change_profile(self) -> None:
         self.state.profile_id = self.profile_combo.currentData()
@@ -1624,7 +1626,7 @@ class MainWindow(QMainWindow):
         self.sftp_connection_guard = threading.RLock()
         self.file_sidebar_visible = False
         self.directory_cache: dict[tuple[str, str], tuple[list[RemoteFileEntry], str]] = {}
-        self.sftp_workspace_states: list[SFTPPaneState] = []
+        self.sftp_workspace_states_by_profile: dict[str, list[SFTPPaneState]] = {}
 
         self.setWindowTitle(APP_NAME)
         self.resize(1180, 760)
@@ -1964,7 +1966,7 @@ class MainWindow(QMainWindow):
             webbrowser.open(profile.local_url)
 
     def render_sftp_workspace(self, profile: SSHProfile) -> None:
-        self.ensure_sftp_workspace_states(profile)
+        states = self.ensure_sftp_workspace_states(profile)
         header = QFrame()
         header.setStyleSheet("background: rgba(255,255,255,0.92); border-bottom: 1px solid #d9dfdd;")
         header_layout = QHBoxLayout(header)
@@ -1975,30 +1977,15 @@ class MainWindow(QMainWindow):
         name = QLabel(profile.name)
         name.setStyleSheet("font-size: 17px; font-weight: 750;")
         header_layout.addWidget(name)
-        header_layout.addWidget(StatusPill(f"{len(self.sftp_workspace_states)} 个面板", "#6f4db0"))
+        header_layout.addWidget(StatusPill("左右双栏", "#6f4db0"))
 
-        detail = QLabel(profile.target_address or "每个面板可选服务器")
+        detail = QLabel("来源：终端工作区 / 自定义 SFTP")
         detail.setStyleSheet("color: #6b7280; font-size: 12px;")
         header_layout.addWidget(detail, 1)
-
-        header_layout.addWidget(QLabel("布局"))
-
-        count_combo = QComboBox()
-        for count in range(1, 5):
-            count_combo.addItem(str(count), count)
-        count_combo.setCurrentIndex(max(0, len(self.sftp_workspace_states) - 1))
-        count_combo.setFixedWidth(74)
-        count_combo.currentIndexChanged.connect(lambda _index: self.set_sftp_pane_count(int(count_combo.currentData() or 1), profile))
-        header_layout.addWidget(count_combo)
 
         config = QPushButton("配置")
         config.clicked.connect(lambda: self.edit_profile(profile))
         header_layout.addWidget(config)
-
-        add = QPushButton("新增")
-        add.clicked.connect(lambda: self.add_sftp_pane(profile))
-        add.setEnabled(len(self.sftp_workspace_states) < 4)
-        header_layout.addWidget(self.set_primary(add))
         self.detail_layout.addWidget(header)
 
         container = QWidget()
@@ -2011,52 +1998,47 @@ class MainWindow(QMainWindow):
         grid.setContentsMargins(0, 0, 0, 0)
         grid.setSpacing(8)
 
-        positions = [(0, 0), (0, 1), (1, 0), (1, 1)]
-        for index, state in enumerate(self.sftp_workspace_states[:4]):
-            row, column = positions[index]
-            pane = SFTPPaneWidget(self, state, len(self.sftp_workspace_states) > 1, self.remove_sftp_pane)
-            if len(self.sftp_workspace_states) == 1:
-                grid.addWidget(pane, 0, 0, 2, 2)
-            elif len(self.sftp_workspace_states) == 2:
-                grid.addWidget(pane, 0, column, 2, 1)
-            else:
-                grid.addWidget(pane, row, column)
+        for index, state in enumerate(states[:2]):
+            title = "左侧" if index == 0 else "右侧"
+            pane = SFTPPaneWidget(self, state, title)
+            grid.addWidget(pane, 0, index)
 
         grid.setRowStretch(0, 1)
-        grid.setRowStretch(1, 1)
         grid.setColumnStretch(0, 1)
         grid.setColumnStretch(1, 1)
         layout.addWidget(grid_holder, 1)
         self.detail_layout.addWidget(container, 1)
 
+    def sftp_source_profiles(self) -> list[SSHProfile]:
+        return [profile for profile in self.store.profiles if profile.workspaceKind in {"terminal", "sftp"}]
+
     def default_sftp_profile_id(self, profile: SSHProfile) -> str | None:
         return profile.id
 
-    def ensure_sftp_workspace_states(self, profile: SSHProfile) -> None:
-        if not self.sftp_workspace_states:
-            self.sftp_workspace_states = [SFTPPaneState(self.default_sftp_profile_id(profile))]
+    def secondary_sftp_profile_id(self, profile: SSHProfile) -> str | None:
+        source_profiles = self.sftp_source_profiles()
+        terminal = next((item for item in source_profiles if item.workspaceKind == "terminal"), None)
+        if terminal is not None:
+            return terminal.id
+        other = next((item for item in source_profiles if item.id != profile.id), None)
+        return other.id if other is not None else self.default_sftp_profile_id(profile)
 
-    def add_sftp_pane(self, profile: SSHProfile) -> None:
-        self.ensure_sftp_workspace_states(profile)
-        if len(self.sftp_workspace_states) >= 4:
-            return
-        self.sftp_workspace_states.append(SFTPPaneState(self.default_sftp_profile_id(profile)))
-        self.render_selected_profile()
-
-    def remove_sftp_pane(self, state: SFTPPaneState) -> None:
-        if len(self.sftp_workspace_states) <= 1:
-            return
-        self.sftp_workspace_states = [item for item in self.sftp_workspace_states if item is not state]
-        self.render_selected_profile()
-
-    def set_sftp_pane_count(self, count: int, profile: SSHProfile) -> None:
-        target = max(1, min(4, count))
-        self.ensure_sftp_workspace_states(profile)
-        while len(self.sftp_workspace_states) < target:
-            self.sftp_workspace_states.append(SFTPPaneState(self.default_sftp_profile_id(profile)))
-        while len(self.sftp_workspace_states) > target:
-            self.sftp_workspace_states.pop()
-        self.render_selected_profile()
+    def ensure_sftp_workspace_states(self, profile: SSHProfile) -> list[SFTPPaneState]:
+        states = self.sftp_workspace_states_by_profile.get(profile.id)
+        if states is None:
+            states = [
+                SFTPPaneState(self.default_sftp_profile_id(profile)),
+                SFTPPaneState(self.secondary_sftp_profile_id(profile)),
+            ]
+        source_ids = {item.id for item in self.sftp_source_profiles()}
+        while len(states) < 2:
+            states.append(SFTPPaneState(self.secondary_sftp_profile_id(profile)))
+        states = states[:2]
+        for index, state in enumerate(states):
+            if state.profile_id not in source_ids:
+                state.profile_id = self.default_sftp_profile_id(profile) if index == 0 else self.secondary_sftp_profile_id(profile)
+        self.sftp_workspace_states_by_profile[profile.id] = states
+        return states
 
     def render_terminal(self, profile: SSHProfile) -> None:
         status_text = {

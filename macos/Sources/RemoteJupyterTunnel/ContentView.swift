@@ -1622,10 +1622,18 @@ private struct SFTPWorkspaceView: View {
     let profileBox: BindingBox<SSHProfile>
     let onEdit: () -> Void
 
-    @State private var panes: [SFTPWorkspacePaneState] = []
+    @State private var workspacePanes: [UUID: [SFTPWorkspacePaneState]] = [:]
 
     private var currentProfile: SSHProfile {
         profileBox.get()
+    }
+
+    private var sourceProfiles: [SSHProfile] {
+        store.profiles.filter { $0.workspaceKind == .terminal || $0.workspaceKind == .sftp }
+    }
+
+    private var currentPanes: [SFTPWorkspacePaneState] {
+        normalizedPanes(workspacePanes[currentProfile.id])
     }
 
     var body: some View {
@@ -1637,9 +1645,12 @@ private struct SFTPWorkspaceView: View {
                 .padding(10)
         }
         .background(Color(nsColor: .windowBackgroundColor))
-        .onAppear(perform: ensureInitialPane)
+        .onAppear(perform: ensurePanePair)
         .onChange(of: currentProfile.id) { _ in
-            ensureInitialPane()
+            ensurePanePair()
+        }
+        .onChange(of: store.profiles) { _ in
+            ensurePanePair()
         }
     }
 
@@ -1674,9 +1685,9 @@ private struct SFTPWorkspaceView: View {
                 .font(.headline.weight(.semibold))
                 .lineLimit(1)
 
-            StatusDot(text: "\(max(1, panes.count)) 个面板", color: AppTheme.workspaceColor(.sftp))
+            StatusDot(text: "左右双栏", color: AppTheme.workspaceColor(.sftp))
 
-            Text(currentProfile.targetAddress.isEmpty ? "每个面板可选服务器" : currentProfile.targetAddress)
+            Text("来源：终端工作区 / 自定义 SFTP")
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
@@ -1688,12 +1699,10 @@ private struct SFTPWorkspaceView: View {
     private var headerControls: some View {
         ViewThatFits(in: .horizontal) {
             HStack(spacing: 8) {
-                layoutPicker
                 sftpActionButtons
             }
 
             HStack(spacing: 6) {
-                layoutPicker
                 sftpActionButtons
             }
             .labelStyle(.iconOnly)
@@ -1702,147 +1711,91 @@ private struct SFTPWorkspaceView: View {
         .fixedSize(horizontal: true, vertical: false)
     }
 
-    private var layoutPicker: some View {
-        HStack(spacing: 6) {
-            Text("布局")
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(.secondary)
-
-            Picker("布局", selection: paneCountBinding) {
-                ForEach(1...4, id: \.self) { count in
-                    Text("\(count)")
-                        .tag(count)
-                }
-            }
-            .pickerStyle(.segmented)
-            .frame(width: 138)
-            .help("最多 4 个面板")
-        }
-    }
-
     @ViewBuilder
     private var sftpActionButtons: some View {
         Button(action: onEdit) {
             Label("配置", systemImage: "slider.horizontal.3")
         }
         .buttonStyle(.bordered)
-
-        Button(action: addPane) {
-            Label("新增面板", systemImage: "rectangle.grid.2x2")
-        }
-        .buttonStyle(.borderedProminent)
-        .disabled(panes.count >= 4 || store.profiles.isEmpty)
     }
 
-    @ViewBuilder
     private var paneGrid: some View {
-        switch panes.count {
-        case 0:
-            EmptyStateView(
-                systemImage: "folder.badge.gearshape",
-                title: "还没有 SFTP 面板",
-                subtitle: "点击新增面板后选择服务器"
-            )
-        case 1:
-            paneView(0)
-        case 2:
-            HSplitView {
-                paneView(0)
-                paneView(1)
-            }
-        default:
-            VSplitView {
-                HSplitView {
-                    paneView(0)
-                    paneView(1)
-                }
-
-                HSplitView {
-                    paneView(2)
-                    if panes.count > 3 {
-                        paneView(3)
-                    } else {
-                        Color.clear
-                            .frame(minWidth: 280, minHeight: 220)
-                    }
-                }
-            }
+        HSplitView {
+            paneView(0, title: "左侧")
+            paneView(1, title: "右侧")
         }
     }
 
     @ViewBuilder
-    private func paneView(_ index: Int) -> some View {
-        if panes.indices.contains(index) {
+    private func paneView(_ index: Int, title: String) -> some View {
+        if currentPanes.indices.contains(index) {
             SFTPWorkspacePaneContainer(
+                title: title,
                 pane: paneBinding(index),
-                availableProfiles: store.profiles,
-                canClose: panes.count > 1,
-                onClose: { paneID in
-                    removePane(paneID)
-                }
+                availableProfiles: sourceProfiles
             )
             .frame(minWidth: 320, minHeight: 220)
         }
     }
 
-    private var paneCountBinding: Binding<Int> {
+    private func paneBinding(_ index: Int) -> Binding<SFTPWorkspacePaneState> {
         Binding(
-            get: { max(1, panes.count) },
-            set: { newCount in
-                setPaneCount(newCount)
+            get: {
+                let panes = currentPanes
+                return panes[index]
+            },
+            set: { updatedPane in
+                var panes = currentPanes
+                panes[index] = updatedPane
+                workspacePanes[currentProfile.id] = normalizedPanes(panes)
             }
         )
     }
 
-    private func paneBinding(_ index: Int) -> Binding<SFTPWorkspacePaneState> {
-        Binding(
-            get: { panes[index] },
-            set: { panes[index] = $0 }
-        )
-    }
-
-    private func ensureInitialPane() {
-        guard panes.isEmpty else { return }
-        panes = [SFTPWorkspacePaneState(profileID: defaultPaneProfileID)]
+    private func ensurePanePair() {
+        workspacePanes[currentProfile.id] = normalizedPanes(workspacePanes[currentProfile.id])
     }
 
     private var defaultPaneProfileID: UUID? {
         currentProfile.id
     }
 
-    private func addPane() {
-        guard panes.count < 4 else { return }
-        panes.append(SFTPWorkspacePaneState(profileID: defaultPaneProfileID))
+    private var secondaryPaneProfileID: UUID? {
+        sourceProfiles.first { $0.workspaceKind == .terminal }?.id
+            ?? sourceProfiles.first { $0.id != currentProfile.id }?.id
+            ?? defaultPaneProfileID
     }
 
-    private func removePane(_ paneID: UUID) {
-        guard panes.count > 1 else { return }
-        panes.removeAll { $0.id == paneID }
+    private func defaultPanePair() -> [SFTPWorkspacePaneState] {
+        [
+            SFTPWorkspacePaneState(profileID: defaultPaneProfileID),
+            SFTPWorkspacePaneState(profileID: secondaryPaneProfileID)
+        ]
     }
 
-    private func setPaneCount(_ count: Int) {
-        let target = min(max(count, 1), 4)
-        if panes.isEmpty {
-            ensureInitialPane()
+    private func normalizedPanes(_ panes: [SFTPWorkspacePaneState]?) -> [SFTPWorkspacePaneState] {
+        var normalized = panes ?? defaultPanePair()
+        let validProfileIDs = Set(sourceProfiles.map(\.id))
+        while normalized.count < 2 {
+            let profileID = normalized.isEmpty ? defaultPaneProfileID : secondaryPaneProfileID
+            normalized.append(SFTPWorkspacePaneState(profileID: profileID))
         }
-
-        while panes.count < target {
-            addPane()
+        if normalized.count > 2 {
+            normalized = Array(normalized.prefix(2))
         }
-
-        while panes.count > target {
-            panes.removeLast()
+        for index in normalized.indices where normalized[index].profileID.map({ !validProfileIDs.contains($0) }) ?? true {
+            normalized[index].profileID = index == 0 ? defaultPaneProfileID : secondaryPaneProfileID
         }
+        return normalized
     }
 }
 
 private struct SFTPWorkspacePaneContainer: View {
     @StateObject private var sftp = SFTPManager()
 
+    let title: String
     @Binding var pane: SFTPWorkspacePaneState
     let availableProfiles: [SSHProfile]
-    let canClose: Bool
-    let onClose: (UUID) -> Void
 
     private var selectedProfile: SSHProfile? {
         guard let profileID = pane.profileID else { return nil }
@@ -1856,6 +1809,10 @@ private struct SFTPWorkspacePaneContainer: View {
     var body: some View {
         VStack(spacing: 8) {
             HStack(spacing: 8) {
+                Text(title)
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+
                 Picker("服务器", selection: profileSelection) {
                     ForEach(availableProfiles) { profile in
                         Text(profile.name)
@@ -1881,15 +1838,6 @@ private struct SFTPWorkspacePaneContainer: View {
                 .buttonStyle(.bordered)
                 .help("刷新当前面板")
                 .disabled(!selectedProfileCanConnect || sftp.status == .running)
-
-                Button {
-                    onClose(pane.id)
-                } label: {
-                    Image(systemName: "xmark")
-                }
-                .buttonStyle(.bordered)
-                .help("关闭面板")
-                .disabled(!canClose)
             }
             .controlSize(.small)
 
@@ -1913,7 +1861,7 @@ private struct SFTPWorkspacePaneContainer: View {
                 EmptyStateView(
                     systemImage: "server.rack",
                     title: "没有可用配置",
-                    subtitle: "先新增一个连接配置"
+                    subtitle: "先新增终端工作区，或新建一个自定义 SFTP 工作区"
                 )
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .background(Color(nsColor: .textBackgroundColor), in: RoundedRectangle(cornerRadius: 8, style: .continuous))

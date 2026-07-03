@@ -202,13 +202,13 @@ jobs:
           417ssh $VERSION portable packages.
 
           Highlights:
-          - Pure SFTP workspace header is more compact: profile title, pane count, layout picker, settings, and add-pane action now share one row.
+          - Pure SFTP workspace is now a fixed left/right dual-pane workspace; each side can choose a terminal workspace or custom SFTP workspace as its source.
+          - Each SFTP workspace keeps its own left/right selections, so multiple SFTP workspaces can be switched independently.
           - SFTP pane toolbars and file rows are denser, leaving more room for the actual file list.
           - Profile editor imports existing `ssh ...` commands inline, without a separate popup, and fills host, jump host, forwarding, flags, and identity file fields.
           - Sidebar actions are simplified to Add, Delete, and Settings; Add opens a workspace-type menu.
           - New profiles can be canceled directly; canceling removes the temporary blank profile instead of leaving it behind.
           - Blank SFTP workspaces no longer auto-select another saved server; empty profiles stay local until configured.
-          - New pure SFTP workspace supports 1-4 panes, including same-server multi-pane and multi-server layouts.
           - Drag and drop now supports local uploads and remote item transfer between SFTP panes, including the terminal SFTP side panel.
           - SFTP file browser supports right-click actions: open, download, copy, rename, delete, refresh, new folder, and permission editing.
           - The terminal file browser is now a collapsible side panel instead of being shown all the time.
