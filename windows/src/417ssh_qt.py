@@ -18,7 +18,7 @@ import zipfile
 from pathlib import Path
 from typing import Callable
 
-from PySide6.QtCore import QByteArray, QMimeData, QObject, Qt, QTimer, QUrl, Signal
+from PySide6.QtCore import QByteArray, QMimeData, QObject, QSize, Qt, QTimer, QUrl, Signal
 from PySide6.QtGui import QColor, QDragEnterEvent, QDropEvent, QFont, QIcon, QPixmap, QTextCursor
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -76,7 +76,7 @@ def app_version() -> str:
         text = version_file.read_text(encoding="utf-8").strip()
         if text:
             return text
-    return "0.3.5"
+    return "0.3.6"
 
 
 CURRENT_VERSION = app_version()
@@ -1160,10 +1160,11 @@ class SFTPPaneWidget(QFrame):
 
     def build_ui(self, can_close: bool) -> None:
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(10, 10, 10, 10)
-        layout.setSpacing(8)
+        layout.setContentsMargins(8, 8, 8, 8)
+        layout.setSpacing(6)
 
         top = QHBoxLayout()
+        top.setSpacing(6)
         self.profile_combo = QComboBox()
         for profile in self.controller.store.profiles:
             self.profile_combo.addItem(profile.name, profile.id)
@@ -1193,6 +1194,7 @@ class SFTPPaneWidget(QFrame):
         layout.addLayout(top)
 
         path_row = QHBoxLayout()
+        path_row.setSpacing(6)
         up = QPushButton("上级")
         up.clicked.connect(self.go_parent)
         path_row.addWidget(up)
@@ -1205,6 +1207,7 @@ class SFTPPaneWidget(QFrame):
         layout.addLayout(path_row)
 
         action_row = QHBoxLayout()
+        action_row.setSpacing(6)
         self.filter_input = QLineEdit(self.state.filter_text)
         self.filter_input.setPlaceholderText("筛选")
         self.filter_input.textChanged.connect(self.handle_filter_changed)
@@ -1231,6 +1234,9 @@ class SFTPPaneWidget(QFrame):
         layout.addLayout(action_row)
 
         self.tree = RemoteFileTree()
+        self.tree.setIconSize(QSize(16, 16))
+        self.tree.setIndentation(14)
+        self.tree.setStyleSheet("QTreeWidget::item { padding: 1px 0; }")
         self.tree.drag_profile_id = self.state.profile_id
         self.tree.setHeaderLabels(["名称", "修改时间", "大小", "类型"])
         self.tree.setColumnWidth(0, 240)
@@ -1959,41 +1965,51 @@ class MainWindow(QMainWindow):
 
     def render_sftp_workspace(self, profile: SSHProfile) -> None:
         self.ensure_sftp_workspace_states(profile)
-        self.detail_layout.addWidget(self.header(profile, "SFTP 工作区", status_color("文件完成")))
+        header = QFrame()
+        header.setStyleSheet("background: rgba(255,255,255,0.92); border-bottom: 1px solid #d9dfdd;")
+        header_layout = QHBoxLayout(header)
+        header_layout.setContentsMargins(12, 7, 12, 7)
+        header_layout.setSpacing(8)
+        header_layout.addWidget(make_logo(30))
 
-        container = QWidget()
-        layout = QVBoxLayout(container)
-        layout.setContentsMargins(12, 10, 12, 12)
-        layout.setSpacing(10)
+        name = QLabel(profile.name)
+        name.setStyleSheet("font-size: 17px; font-weight: 750;")
+        header_layout.addWidget(name)
+        header_layout.addWidget(StatusPill(f"{len(self.sftp_workspace_states)} 个面板", "#6f4db0"))
 
-        controls = QHBoxLayout()
-        title = QLabel("纯 SFTP 工作区")
-        title.setStyleSheet("font-weight: 700;")
-        controls.addWidget(title)
-        controls.addWidget(StatusPill(f"{len(self.sftp_workspace_states)} 个面板", "#6f4db0"))
-        controls.addStretch(1)
+        detail = QLabel(profile.target_address or "每个面板可选服务器")
+        detail.setStyleSheet("color: #6b7280; font-size: 12px;")
+        header_layout.addWidget(detail, 1)
+
+        header_layout.addWidget(QLabel("布局"))
 
         count_combo = QComboBox()
         for count in range(1, 5):
             count_combo.addItem(str(count), count)
         count_combo.setCurrentIndex(max(0, len(self.sftp_workspace_states) - 1))
+        count_combo.setFixedWidth(74)
         count_combo.currentIndexChanged.connect(lambda _index: self.set_sftp_pane_count(int(count_combo.currentData() or 1), profile))
-        controls.addWidget(count_combo)
-
-        add = QPushButton("新增面板")
-        add.clicked.connect(lambda: self.add_sftp_pane(profile))
-        add.setEnabled(len(self.sftp_workspace_states) < 4)
-        controls.addWidget(self.set_primary(add))
+        header_layout.addWidget(count_combo)
 
         config = QPushButton("配置")
         config.clicked.connect(lambda: self.edit_profile(profile))
-        controls.addWidget(config)
-        layout.addLayout(controls)
+        header_layout.addWidget(config)
+
+        add = QPushButton("新增")
+        add.clicked.connect(lambda: self.add_sftp_pane(profile))
+        add.setEnabled(len(self.sftp_workspace_states) < 4)
+        header_layout.addWidget(self.set_primary(add))
+        self.detail_layout.addWidget(header)
+
+        container = QWidget()
+        layout = QVBoxLayout(container)
+        layout.setContentsMargins(10, 10, 10, 10)
+        layout.setSpacing(8)
 
         grid_holder = QWidget()
         grid = QGridLayout(grid_holder)
         grid.setContentsMargins(0, 0, 0, 0)
-        grid.setSpacing(10)
+        grid.setSpacing(8)
 
         positions = [(0, 0), (0, 1), (1, 0), (1, 1)]
         for index, state in enumerate(self.sftp_workspace_states[:4]):

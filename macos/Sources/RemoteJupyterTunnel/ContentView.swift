@@ -1617,7 +1617,6 @@ private struct SFTPWorkspacePaneState: Identifiable, Equatable {
 }
 
 private struct SFTPWorkspaceView: View {
-    @Environment(\.colorScheme) private var colorScheme
     @EnvironmentObject private var store: ProfileStore
 
     let profileBox: BindingBox<SSHProfile>
@@ -1633,13 +1632,9 @@ private struct SFTPWorkspaceView: View {
         VStack(spacing: 0) {
             header
 
-            VStack(spacing: 10) {
-                toolbar
-
-                paneGrid
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-            }
-            .padding(12)
+            paneGrid
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .padding(10)
         }
         .background(Color(nsColor: .windowBackgroundColor))
         .onAppear(perform: ensureInitialPane)
@@ -1653,17 +1648,17 @@ private struct SFTPWorkspaceView: View {
             HStack(spacing: 10) {
                 headerTitle
                     .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
-                headerButtons
+                headerControls
                     .layoutPriority(2)
             }
 
-            VStack(alignment: .leading, spacing: 8) {
+            VStack(alignment: .leading, spacing: 6) {
                 headerTitle
-                headerButtons
+                headerControls
             }
         }
         .padding(.horizontal, 12)
-        .padding(.vertical, 10)
+        .padding(.vertical, 7)
         .background(.regularMaterial)
         .overlay(alignment: .bottom) {
             Divider()
@@ -1672,42 +1667,57 @@ private struct SFTPWorkspaceView: View {
     }
 
     private var headerTitle: some View {
-        HStack(spacing: 10) {
-            WorkspaceIconTile(kind: .sftp, isActive: false, size: 34)
+        HStack(spacing: 8) {
+            WorkspaceIconTile(kind: .sftp, isActive: false, size: 30)
 
-            VStack(alignment: .leading, spacing: 3) {
-                HStack(spacing: 8) {
-                    Text(currentProfile.name)
-                        .font(.title3.weight(.semibold))
-                        .lineLimit(1)
+            Text(currentProfile.name)
+                .font(.headline.weight(.semibold))
+                .lineLimit(1)
 
-                    StatusDot(text: "\(max(1, panes.count)) 个面板", color: AppTheme.workspaceColor(.sftp))
-                }
+            StatusDot(text: "\(max(1, panes.count)) 个面板", color: AppTheme.workspaceColor(.sftp))
 
-                Text(currentProfile.targetAddress.isEmpty ? "可在每个面板选择服务器" : currentProfile.targetAddress)
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                    .textSelection(.enabled)
-            }
-            .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
+            Text(currentProfile.targetAddress.isEmpty ? "每个面板可选服务器" : currentProfile.targetAddress)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .truncationMode(.middle)
+                .textSelection(.enabled)
         }
     }
 
-    private var headerButtons: some View {
+    private var headerControls: some View {
         ViewThatFits(in: .horizontal) {
             HStack(spacing: 8) {
+                layoutPicker
                 sftpActionButtons
             }
 
             HStack(spacing: 6) {
+                layoutPicker
                 sftpActionButtons
             }
             .labelStyle(.iconOnly)
         }
         .controlSize(.small)
         .fixedSize(horizontal: true, vertical: false)
+    }
+
+    private var layoutPicker: some View {
+        HStack(spacing: 6) {
+            Text("布局")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+
+            Picker("布局", selection: paneCountBinding) {
+                ForEach(1...4, id: \.self) { count in
+                    Text("\(count)")
+                        .tag(count)
+                }
+            }
+            .pickerStyle(.segmented)
+            .frame(width: 138)
+            .help("最多 4 个面板")
+        }
     }
 
     @ViewBuilder
@@ -1722,35 +1732,6 @@ private struct SFTPWorkspaceView: View {
         }
         .buttonStyle(.borderedProminent)
         .disabled(panes.count >= 4 || store.profiles.isEmpty)
-    }
-
-    private var toolbar: some View {
-        HStack(spacing: 8) {
-            Label("SFTP 工作区", systemImage: "folder.badge.gearshape")
-                .font(.headline)
-
-            Text("最多 4 个面板")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-
-            Spacer(minLength: 0)
-
-            Picker("布局", selection: paneCountBinding) {
-                ForEach(1...4, id: \.self) { count in
-                    Text("\(count)")
-                        .tag(count)
-                }
-            }
-            .pickerStyle(.segmented)
-            .frame(width: 150)
-        }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 9)
-        .background(AppTheme.panelBackground(colorScheme), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .stroke(Color(nsColor: .separatorColor).opacity(0.38), lineWidth: 1)
-        }
     }
 
     @ViewBuilder
@@ -1980,20 +1961,20 @@ private struct RemoteFileBrowserPane: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            VStack(spacing: 12) {
-                HStack(spacing: 10) {
+            VStack(spacing: 8) {
+                HStack(spacing: 8) {
                     Image(systemName: "server.rack")
-                        .font(.system(size: 15, weight: .semibold))
+                        .font(.system(size: 13, weight: .semibold))
                         .foregroundStyle(.white)
-                        .frame(width: 28, height: 28)
-                        .background(Color(red: 0.02, green: 0.33, blue: 0.52), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                        .frame(width: 24, height: 24)
+                        .background(Color(red: 0.02, green: 0.33, blue: 0.52), in: RoundedRectangle(cornerRadius: 6, style: .continuous))
 
                     Text(profile.targetHost.isEmpty ? "远程服务器" : profile.targetHost)
-                        .font(.headline)
+                        .font(.subheadline.weight(.semibold))
                         .lineLimit(1)
 
                     StatusDot(text: sftp.status.label, color: statusColor)
-                        .frame(width: 96, alignment: .leading)
+                        .frame(width: 86, alignment: .leading)
 
                     Spacer()
 
@@ -2001,11 +1982,12 @@ private struct RemoteFileBrowserPane: View {
                         Image(systemName: "magnifyingglass")
                         TextField("筛选", text: $filterText)
                             .textFieldStyle(.plain)
+                            .font(.caption)
                     }
-                    .padding(.horizontal, 9)
-                    .padding(.vertical, 6)
-                    .frame(width: 150)
-                    .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .frame(width: 132)
+                    .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 6, style: .continuous))
 
                     Menu {
                         Button(action: refresh) {
@@ -2069,7 +2051,7 @@ private struct RemoteFileBrowserPane: View {
                 HStack(spacing: 8) {
                     Button(action: goParent) {
                         Image(systemName: "chevron.left")
-                            .frame(width: 28, height: 28)
+                            .frame(width: 24, height: 24)
                     }
                     .buttonStyle(.plain)
                     .help("返回上级")
@@ -2077,7 +2059,7 @@ private struct RemoteFileBrowserPane: View {
 
                     Button(action: goParent) {
                         Image(systemName: "chevron.up")
-                            .frame(width: 28, height: 28)
+                            .frame(width: 24, height: 24)
                     }
                     .buttonStyle(.plain)
                     .help("上级文件夹")
@@ -2086,7 +2068,7 @@ private struct RemoteFileBrowserPane: View {
                     HStack(spacing: 6) {
                         TextField("远程路径，例如 /home/user", text: $remotePathText)
                             .textFieldStyle(.plain)
-                            .font(.callout.weight(.medium))
+                            .font(.caption.weight(.medium))
                             .onSubmit {
                                 openPath(remotePathText)
                             }
@@ -2102,17 +2084,17 @@ private struct RemoteFileBrowserPane: View {
                         .help("跳转到输入的远程路径")
                         .disabled(!sftp.canNavigateDirectories)
                     }
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 7)
-                    .background(Color(nsColor: .textBackgroundColor), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 5)
+                    .background(Color(nsColor: .textBackgroundColor), in: RoundedRectangle(cornerRadius: 6, style: .continuous))
                     .overlay {
-                        RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        RoundedRectangle(cornerRadius: 6, style: .continuous)
                             .stroke(Color(nsColor: .separatorColor).opacity(0.45), lineWidth: 1)
                     }
                         .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
                 }
             }
-            .padding(14)
+            .padding(10)
             .background(Color(red: 0.965, green: 0.982, blue: 0.988))
 
             Divider()

@@ -202,6 +202,8 @@ jobs:
           417ssh $VERSION portable packages.
 
           Highlights:
+          - Pure SFTP workspace header is more compact: profile title, pane count, layout picker, settings, and add-pane action now share one row.
+          - SFTP pane toolbars and file rows are denser, leaving more room for the actual file list.
           - Profile editor imports existing `ssh ...` commands inline, without a separate popup, and fills host, jump host, forwarding, flags, and identity file fields.
           - Sidebar actions are simplified to Add, Delete, and Settings; Add opens a workspace-type menu.
           - New profiles can be canceled directly; canceling removes the temporary blank profile instead of leaving it behind.

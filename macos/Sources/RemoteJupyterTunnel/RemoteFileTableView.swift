@@ -58,7 +58,7 @@ struct RemoteFileTableView: NSViewRepresentable {
         tableView.allowsMultipleSelection = false
         tableView.allowsColumnReordering = false
         tableView.allowsColumnResizing = true
-        tableView.rowHeight = 54
+        tableView.rowHeight = 42
         tableView.intercellSpacing = NSSize(width: 0, height: 0)
         tableView.columnAutoresizingStyle = .lastColumnOnlyAutoresizingStyle
         tableView.dataSource = context.coordinator
@@ -194,7 +194,7 @@ struct RemoteFileTableView: NSViewRepresentable {
         }
 
         func tableView(_ tableView: NSTableView, heightOfRow row: Int) -> CGFloat {
-            54
+            42
         }
 
         func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
@@ -424,9 +424,9 @@ private final class RemoteNameCellView: NSTableCellView {
         titleField.translatesAutoresizingMaskIntoConstraints = false
         detailField.translatesAutoresizingMaskIntoConstraints = false
 
-        titleField.font = .systemFont(ofSize: 13, weight: .medium)
+        titleField.font = .systemFont(ofSize: 12, weight: .medium)
         titleField.lineBreakMode = .byTruncatingMiddle
-        detailField.font = .systemFont(ofSize: 11)
+        detailField.font = .systemFont(ofSize: 10)
         detailField.textColor = .secondaryLabelColor
         detailField.lineBreakMode = .byTruncatingTail
 
@@ -435,14 +435,14 @@ private final class RemoteNameCellView: NSTableCellView {
         addSubview(detailField)
 
         NSLayoutConstraint.activate([
-            iconView.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 10),
+            iconView.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 8),
             iconView.centerYAnchor.constraint(equalTo: centerYAnchor),
-            iconView.widthAnchor.constraint(equalToConstant: 28),
-            iconView.heightAnchor.constraint(equalToConstant: 28),
+            iconView.widthAnchor.constraint(equalToConstant: 24),
+            iconView.heightAnchor.constraint(equalToConstant: 24),
 
-            titleField.leadingAnchor.constraint(equalTo: iconView.trailingAnchor, constant: 10),
+            titleField.leadingAnchor.constraint(equalTo: iconView.trailingAnchor, constant: 8),
             titleField.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -8),
-            titleField.topAnchor.constraint(equalTo: topAnchor, constant: 8),
+            titleField.topAnchor.constraint(equalTo: topAnchor, constant: 5),
 
             detailField.leadingAnchor.constraint(equalTo: titleField.leadingAnchor),
             detailField.trailingAnchor.constraint(equalTo: titleField.trailingAnchor),
@@ -484,7 +484,7 @@ private final class RemoteTextCellView: NSTableCellView {
 
     private func setup() {
         label.translatesAutoresizingMaskIntoConstraints = false
-        label.font = .systemFont(ofSize: 13)
+        label.font = .systemFont(ofSize: 12)
         label.lineBreakMode = .byTruncatingTail
         addSubview(label)
         NSLayoutConstraint.activate([
@@ -518,7 +518,7 @@ private final class RemoteKindCellView: NSTableCellView {
     private func setup() {
         label.translatesAutoresizingMaskIntoConstraints = false
         chevron.translatesAutoresizingMaskIntoConstraints = false
-        label.font = .systemFont(ofSize: 13)
+        label.font = .systemFont(ofSize: 12)
         label.textColor = .secondaryLabelColor
         chevron.image = NSImage(systemSymbolName: "chevron.right", accessibilityDescription: nil)
         chevron.contentTintColor = .tertiaryLabelColor
