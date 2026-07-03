@@ -317,7 +317,10 @@ class ProfileStore:
         PROFILES_FILE.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
 
     def profiles_for(self, kind: str) -> list[SSHProfile]:
-        return [profile for profile in self.profiles if profile.workspaceKind == kind]
+        matching = [profile for profile in self.profiles if profile.workspaceKind == kind]
+        if kind == "sftp":
+            return matching[:1]
+        return matching
 
     def selected(self) -> SSHProfile | None:
         for profile in self.profiles:
@@ -326,6 +329,13 @@ class ProfileStore:
         return self.profiles[0] if self.profiles else None
 
     def add(self, kind: str) -> SSHProfile:
+        if kind == "sftp":
+            existing = next((profile for profile in self.profiles if profile.workspaceKind == "sftp"), None)
+            if existing is not None:
+                self.selected_profile_id = existing.id
+                self.save()
+                return existing
+
         count = len(self.profiles_for(kind))
         profile = SSHProfile.blank(count + 1, kind)
         profile.name = self.next_name(profile.name)

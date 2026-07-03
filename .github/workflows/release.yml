@@ -202,9 +202,13 @@ jobs:
           417ssh $VERSION portable packages.
 
           Highlights:
-          - Pure SFTP workspace is now a fixed left/right dual-pane workspace; each side can choose a terminal workspace or custom SFTP workspace as its source.
-          - Each SFTP workspace keeps its own left/right selections, so multiple SFTP workspaces can be switched independently.
-          - SFTP pane toolbars and file rows are denser, leaving more room for the actual file list.
+          - Pure SFTP now uses a single workspace entry with top tabs for multiple SFTP sessions.
+          - The first SFTP tab opens the local host \`127.0.0.1\` by default, so local files are ready without connecting.
+          - New SFTP tabs open a Hosts picker and can choose local files, terminal workspaces, or custom SFTP profiles.
+          - SFTP tabs keep their own source, path, selection, and cached directory state while switching.
+          - Existing extra SFTP profiles are hidden from the sidebar but remain available as SFTP Hosts sources.
+          - Local-to-remote drag uploads, remote-to-local drag downloads, and remote-to-remote drag transfer are supported from the SFTP workspace.
+          - SFTP pane toolbars and file rows remain compact, leaving more room for the actual file list.
           - Profile editor imports existing `ssh ...` commands inline, without a separate popup, and fills host, jump host, forwarding, flags, and identity file fields.
           - Sidebar actions are simplified to Add, Delete, and Settings; Add opens a workspace-type menu.
           - New profiles can be canceled directly; canceling removes the temporary blank profile instead of leaving it behind.

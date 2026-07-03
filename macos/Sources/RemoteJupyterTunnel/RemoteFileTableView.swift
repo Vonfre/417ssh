@@ -40,6 +40,7 @@ struct RemoteFileTableView: NSViewRepresentable {
     let loadingPath: String?
     let canNavigate: Bool
     let canMutate: Bool
+    var localFileDragEnabled = false
     let onOpen: (RemoteFileEntry) -> Void
     let onContextAction: (RemoteFileContextAction, RemoteFileEntry?) -> Void
 
@@ -247,6 +248,10 @@ struct RemoteFileTableView: NSViewRepresentable {
             guard row >= 0, row < entries.count else { return nil }
             let entry = entries[row]
             guard entry.name != ".." else { return nil }
+
+            if parent.localFileDragEnabled {
+                return NSURL(fileURLWithPath: entry.path)
+            }
 
             let payload = RemoteFileDragPayload(
                 profileID: parent.profileID.uuidString,

@@ -4,6 +4,7 @@ import importlib.util
 import json
 import os
 import posixpath
+import shutil
 import shlex
 import stat
 import subprocess
@@ -76,7 +77,7 @@ def app_version() -> str:
         text = version_file.read_text(encoding="utf-8").strip()
         if text:
             return text
-    return "0.3.7"
+    return "0.3.8"
 
 
 CURRENT_VERSION = app_version()
@@ -1038,6 +1039,7 @@ class RemoteFileTree(QTreeWidget):
     def __init__(self) -> None:
         super().__init__()
         self.drag_profile_id: str | None = None
+        self.local_drag_enabled = False
         self.setAcceptDrops(True)
         self.setDragEnabled(True)
         self.setDragDropMode(QAbstractItemView.DragDrop)
@@ -1053,6 +1055,12 @@ class RemoteFileTree(QTreeWidget):
             return mime
         item = items[0]
         if bool(item.data(0, Qt.UserRole + 6)):
+            return mime
+        if self.local_drag_enabled:
+            path = str(item.data(0, Qt.UserRole) or "")
+            if path:
+                mime.setUrls([QUrl.fromLocalFile(path)])
+                mime.setText(path)
             return mime
         payload = {
             "profile_id": self.drag_profile_id,
@@ -1141,16 +1149,441 @@ class SFTPPaneState:
         self.filter_text = ""
 
 
+class SFTPTabState(SFTPPaneState):
+    def __init__(self, source_kind: str | None = "local", profile_id: str | None = None, title: str = "127.0.0.1") -> None:
+        super().__init__(profile_id)
+        self.source_kind = source_kind
+        self.title = title
+        if source_kind == "local":
+            self.current_path = str(Path.home())
+        elif source_kind is None:
+            self.current_path = str(Path.home())
+            self.status = "选择主机"
+
+    @classmethod
+    def local(cls) -> "SFTPTabState":
+        return cls("local", None, "127.0.0.1")
+
+    @classmethod
+    def empty(cls) -> "SFTPTabState":
+        return cls(None, None, "新标签")
+
+    @property
+    def is_local(self) -> bool:
+        return self.source_kind == "local"
+
+
+class LocalSFTPPaneWidget(QFrame):
+    done = Signal(list, str)
+    error = Signal(str)
+    status_changed = Signal(str)
+
+    def __init__(self, controller: "MainWindow", state: SFTPTabState) -> None:
+        super().__init__()
+        self.controller = controller
+        self.state = state
+        self.setStyleSheet("QFrame { background: white; border: 1px solid #d1d8d6; border-radius: 8px; }")
+        self.build_ui()
+        self.done.connect(self.handle_done)
+        self.error.connect(self.handle_error)
+        self.status_changed.connect(self.handle_status)
+        QTimer.singleShot(0, self.refresh_if_needed)
+
+    def build_ui(self) -> None:
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(8, 8, 8, 8)
+        layout.setSpacing(6)
+
+        top = QHBoxLayout()
+        top.setSpacing(6)
+        title = QLabel("127.0.0.1")
+        title.setStyleSheet("font-size: 13px; font-weight: 750;")
+        top.addWidget(title)
+        self.status_pill = StatusPill(self.state.status, status_color(self.state.status))
+        top.addWidget(self.status_pill)
+        top.addStretch(1)
+        refresh = QToolButton()
+        refresh.setText("刷新")
+        refresh.setToolTip("刷新当前目录")
+        refresh.clicked.connect(lambda: self.refresh())
+        top.addWidget(refresh)
+        layout.addLayout(top)
+
+        path_row = QHBoxLayout()
+        path_row.setSpacing(6)
+        up = QPushButton("上级")
+        up.clicked.connect(self.go_parent)
+        path_row.addWidget(up)
+        self.path_input = QLineEdit(self.state.current_path)
+        self.path_input.returnPressed.connect(lambda: self.refresh(self.path_input.text()))
+        path_row.addWidget(self.path_input, 1)
+        open_path = QPushButton("打开")
+        open_path.clicked.connect(lambda: self.refresh(self.path_input.text()))
+        path_row.addWidget(open_path)
+        layout.addLayout(path_row)
+
+        action_row = QHBoxLayout()
+        action_row.setSpacing(6)
+        self.filter_input = QLineEdit(self.state.filter_text)
+        self.filter_input.setPlaceholderText("筛选")
+        self.filter_input.textChanged.connect(self.handle_filter_changed)
+        action_row.addWidget(self.filter_input, 1)
+
+        menu_button = QToolButton()
+        menu_button.setText("操作")
+        menu_button.setPopupMode(QToolButton.InstantPopup)
+        menu = QMenu(menu_button)
+        menu.addAction("刷新", lambda: self.refresh())
+        menu.addAction("上级文件夹", self.go_parent)
+        menu.addSeparator()
+        menu.addAction("复制到当前目录", self.choose_copy_here)
+        menu.addAction("复制选中项到...", self.copy_selected_to_folder)
+        menu.addAction("新建文件夹", self.create_folder)
+        menu.addSeparator()
+        menu.addAction("复制到目标目录", self.copy_selected_to_path)
+        menu.addAction("重命名", self.rename_selected)
+        menu.addAction("修改权限", self.edit_selected_permissions)
+        menu.addAction("删除", self.delete_selected)
+        menu_button.setMenu(menu)
+        action_row.addWidget(menu_button)
+        layout.addLayout(action_row)
+
+        self.tree = RemoteFileTree()
+        self.tree.local_drag_enabled = True
+        self.tree.setIconSize(QSize(16, 16))
+        self.tree.setIndentation(14)
+        self.tree.setStyleSheet("QTreeWidget::item { padding: 1px 0; }")
+        self.tree.setHeaderLabels(["名称", "修改时间", "大小", "类型"])
+        self.tree.setColumnWidth(0, 260)
+        self.tree.itemDoubleClicked.connect(lambda _item, _column: self.open_selected())
+        self.tree.dropped_paths.connect(self.copy_paths_here)
+        self.tree.remote_dropped.connect(self.handle_remote_drop)
+        self.tree.context_requested.connect(self.show_context_menu)
+        layout.addWidget(self.tree, 1)
+        self.populate()
+
+    def refresh_if_needed(self) -> None:
+        if not self.state.entries:
+            self.refresh(self.state.current_path)
+
+    def refresh(self, path: str | None = None) -> None:
+        target = Path((path or self.state.current_path or str(Path.home())).strip()).expanduser()
+        if not target.exists():
+            QMessageBox.warning(self, APP_NAME, f"路径不存在：{target}")
+            return
+        if target.is_file():
+            self.controller.open_local_path(target)
+            return
+        try:
+            entries, actual = self.list_local_directory(target)
+            self.handle_done(entries, actual)
+        except Exception as exc:
+            self.handle_error(str(exc))
+
+    def list_local_directory(self, path: Path) -> tuple[list[RemoteFileEntry], str]:
+        actual = path.resolve(strict=False)
+        entries: list[RemoteFileEntry] = []
+        if actual.parent != actual:
+            entries.append(
+                RemoteFileEntry(
+                    name="..",
+                    path=str(actual.parent),
+                    is_dir=True,
+                    is_link=False,
+                    permissions="上级目录",
+                    size="",
+                    modified="",
+                )
+            )
+        children = []
+        for child in actual.iterdir():
+            try:
+                stat_result = child.lstat()
+            except OSError:
+                continue
+            is_dir = child.is_dir()
+            is_link = child.is_symlink()
+            children.append(
+                RemoteFileEntry(
+                    name=child.name,
+                    path=str(child),
+                    is_dir=is_dir,
+                    is_link=is_link,
+                    permissions=stat.filemode(stat_result.st_mode),
+                    size="--" if is_dir else bytes_label(stat_result.st_size),
+                    modified=time.strftime("%Y-%m-%d %H:%M", time.localtime(stat_result.st_mtime)),
+                )
+            )
+        children.sort(key=lambda item: (not item.is_dir, item.name.lower()))
+        return entries + children, str(actual)
+
+    def handle_done(self, entries: list, actual: str) -> None:
+        self.state.entries = list(entries)
+        self.state.current_path = actual
+        self.state.status = "本地文件"
+        self.state.pending_path = None
+        self.update_widgets()
+
+    def handle_error(self, message: str) -> None:
+        self.state.status = "文件失败"
+        self.state.pending_path = None
+        self.update_widgets()
+        QMessageBox.critical(self, APP_NAME, message)
+
+    def handle_status(self, status: str) -> None:
+        self.state.status = status
+        self.update_widgets()
+
+    def update_widgets(self) -> None:
+        self.status_pill.setText(self.state.status)
+        self.status_pill.set_color(status_color(self.state.status))
+        if self.path_input.text() != self.state.current_path:
+            self.path_input.setText(self.state.current_path)
+        self.populate()
+
+    def handle_filter_changed(self, text: str) -> None:
+        self.state.filter_text = text
+        self.populate()
+
+    def populate(self) -> None:
+        needle = self.state.filter_text.strip().lower()
+        self.tree.clear()
+        for entry in self.state.entries:
+            if needle and needle not in entry.name.lower():
+                continue
+            self.tree.addTopLevelItem(self.controller.make_remote_file_item(entry))
+
+    def selected_entry(self) -> RemoteFileEntry | None:
+        items = self.tree.selectedItems()
+        if not items:
+            return None
+        path = items[0].data(0, Qt.UserRole)
+        return next((entry for entry in self.state.entries if entry.path == path), None)
+
+    def mutable_entry(self) -> RemoteFileEntry | None:
+        entry = self.selected_entry()
+        if entry is None:
+            QMessageBox.information(self, APP_NAME, "请先选择一个本地文件或文件夹。")
+            return None
+        if entry.name == "..":
+            QMessageBox.information(self, APP_NAME, "上级目录不能执行这个操作。")
+            return None
+        return entry
+
+    def show_context_menu(self, item: object, global_point: object) -> None:
+        entry = self.controller.remote_entry_for_item_in_entries(item, self.state.entries)
+        menu = QMenu(self)
+        if entry is None:
+            menu.addAction("刷新", lambda: self.refresh())
+            menu.addAction("新建文件夹", self.create_folder)
+            menu.addSeparator()
+            menu.addAction("复制到当前目录", self.choose_copy_here)
+            menu.exec(global_point)
+            return
+
+        is_parent = entry.name == ".."
+        menu.addAction("打开", lambda: self.open_entry(entry))
+        copy_to_folder = menu.addAction("复制选中项到...", lambda: self.copy_to_folder(entry))
+        menu.addSeparator()
+        copy_action = menu.addAction("复制到目标目录", lambda: self.copy_to_path(entry))
+        rename_action = menu.addAction("重命名", lambda: self.rename_entry(entry))
+        delete_action = menu.addAction("删除", lambda: self.delete_entry(entry))
+        menu.addSeparator()
+        menu.addAction("刷新", lambda: self.refresh())
+        menu.addAction("新建文件夹", self.create_folder)
+        chmod_action = menu.addAction("修改权限", lambda: self.edit_permissions(entry))
+        for action in (copy_to_folder, copy_action, rename_action, delete_action, chmod_action):
+            action.setEnabled(not is_parent)
+        menu.exec(global_point)
+
+    def open_selected(self) -> None:
+        entry = self.selected_entry()
+        if entry is not None:
+            self.open_entry(entry)
+
+    def open_entry(self, entry: RemoteFileEntry) -> None:
+        if entry.is_dir:
+            self.refresh(entry.path)
+            return
+        self.controller.open_local_path(Path(entry.path))
+
+    def go_parent(self) -> None:
+        path = Path(self.state.current_path)
+        if path.parent == path:
+            return
+        self.refresh(str(path.parent))
+
+    def choose_copy_here(self) -> None:
+        paths, _ = QFileDialog.getOpenFileNames(self, "选择要复制的文件")
+        folder = QFileDialog.getExistingDirectory(self, "也可以选择文件夹；直接取消则只复制文件")
+        selected = list(paths)
+        if folder:
+            selected.append(folder)
+        if selected:
+            self.copy_paths_here(selected)
+
+    def copy_paths_here(self, paths: list[str]) -> None:
+        if paths:
+            self.copy_paths(paths, self.state.current_path)
+
+    def copy_selected_to_folder(self) -> None:
+        entry = self.mutable_entry()
+        if entry is not None:
+            self.copy_to_folder(entry)
+
+    def copy_to_folder(self, entry: RemoteFileEntry) -> None:
+        target_dir = QFileDialog.getExistingDirectory(self, "选择复制位置")
+        if target_dir:
+            self.copy_paths([entry.path], target_dir)
+
+    def copy_selected_to_path(self) -> None:
+        entry = self.mutable_entry()
+        if entry is not None:
+            self.copy_to_path(entry)
+
+    def copy_to_path(self, entry: RemoteFileEntry) -> None:
+        target_dir, ok = QInputDialog.getText(self, "复制到目标目录", "输入本地目标目录：", text=self.state.current_path)
+        target_dir = target_dir.strip()
+        if ok and target_dir:
+            self.copy_paths([entry.path], target_dir)
+
+    def copy_paths(self, paths: list[str], target_dir: str) -> None:
+        target = Path(target_dir).expanduser()
+
+        def worker() -> None:
+            if not target.exists() or not target.is_dir():
+                raise RuntimeError(f"目标目录不可用：{target}")
+            for raw_path in paths:
+                source = Path(raw_path).expanduser()
+                destination = target / source.name
+                if destination.exists():
+                    raise RuntimeError(f"目标已存在：{destination}")
+                if source.is_dir():
+                    shutil.copytree(source, destination, symlinks=True)
+                else:
+                    shutil.copy2(source, destination)
+
+        self.run_operation("文件处理中", worker)
+
+    def rename_selected(self) -> None:
+        entry = self.mutable_entry()
+        if entry is not None:
+            self.rename_entry(entry)
+
+    def rename_entry(self, entry: RemoteFileEntry) -> None:
+        new_name, ok = QInputDialog.getText(self, "重命名", "输入新的名称：", text=entry.name)
+        new_name = new_name.strip()
+        if not ok or not new_name or new_name == entry.name:
+            return
+        if "/" in new_name or "\\" in new_name or new_name in {".", ".."}:
+            QMessageBox.warning(self, APP_NAME, "名称不能为空，也不能包含路径分隔符。")
+            return
+
+        def worker() -> None:
+            Path(entry.path).rename(Path(entry.path).with_name(new_name))
+
+        self.run_operation("文件处理中", worker)
+
+    def delete_selected(self) -> None:
+        entry = self.mutable_entry()
+        if entry is not None:
+            self.delete_entry(entry)
+
+    def delete_entry(self, entry: RemoteFileEntry) -> None:
+        prompt = f"确定删除文件夹“{entry.name}”及其中所有内容吗？" if entry.is_dir else f"确定删除文件“{entry.name}”吗？"
+        if QMessageBox.question(self, "删除", prompt) != QMessageBox.Yes:
+            return
+
+        def worker() -> None:
+            path = Path(entry.path)
+            if path.is_dir() and not path.is_symlink():
+                shutil.rmtree(path)
+            else:
+                path.unlink()
+
+        self.run_operation("文件处理中", worker)
+
+    def create_folder(self) -> None:
+        folder_name, ok = QInputDialog.getText(self, "新建文件夹", "输入文件夹名称：", text="新建文件夹")
+        folder_name = folder_name.strip()
+        if not ok or not folder_name:
+            return
+        if "/" in folder_name or "\\" in folder_name or folder_name in {".", ".."}:
+            QMessageBox.warning(self, APP_NAME, "名称不能为空，也不能包含路径分隔符。")
+            return
+
+        def worker() -> None:
+            target = Path(self.state.current_path) / folder_name
+            if target.exists():
+                raise RuntimeError(f"目标已存在：{target}")
+            target.mkdir()
+
+        self.run_operation("文件处理中", worker)
+
+    def edit_selected_permissions(self) -> None:
+        entry = self.mutable_entry()
+        if entry is not None:
+            self.edit_permissions(entry)
+
+    def edit_permissions(self, entry: RemoteFileEntry) -> None:
+        mode, ok = QInputDialog.getText(self, "修改权限", "输入 chmod 权限，例如 755、664：", text="755" if entry.is_dir else "644")
+        mode = mode.strip()
+        if not ok or not mode:
+            return
+        try:
+            value = int(mode, 8)
+        except ValueError:
+            QMessageBox.warning(self, APP_NAME, "请输入八进制权限，例如 755。")
+            return
+        self.run_operation("文件处理中", lambda: os.chmod(entry.path, value))
+
+    def handle_remote_drop(self, payload: dict) -> None:
+        source_profile = self.controller.profile_by_id(str(payload.get("profile_id") or ""))
+        if source_profile is None:
+            QMessageBox.warning(self, APP_NAME, "没有找到拖拽来源配置。")
+            return
+        entry = RemoteFileEntry(
+            name=str(payload.get("name") or "remote-file"),
+            path=str(payload.get("path") or ""),
+            is_dir=bool(payload.get("is_dir")),
+            is_link=False,
+            permissions="",
+            size="",
+            modified="",
+        )
+        self.run_operation("正在下载", lambda: self.controller.download_path(source_profile, entry, Path(self.state.current_path)))
+
+    def run_operation(self, status: str, worker: Callable) -> None:
+        self.status_changed.emit(status)
+
+        def work() -> None:
+            try:
+                worker()
+                entries, actual = self.list_local_directory(Path(self.state.current_path))
+                self.done.emit(entries, actual)
+            except Exception as exc:
+                self.error.emit(str(exc))
+
+        threading.Thread(target=work, name="LocalSFTPOperation", daemon=True).start()
+
+
 class SFTPPaneWidget(QFrame):
     done = Signal(list, str)
     error = Signal(str)
     status_changed = Signal(str)
 
-    def __init__(self, controller: "MainWindow", state: SFTPPaneState, title: str) -> None:
+    def __init__(
+        self,
+        controller: "MainWindow",
+        state: SFTPPaneState,
+        title: str,
+        show_profile_combo: bool = True,
+    ) -> None:
         super().__init__()
         self.controller = controller
         self.state = state
         self.title = title
+        self.show_profile_combo = show_profile_combo
         self.setStyleSheet("QFrame { background: white; border: 1px solid #d1d8d6; border-radius: 8px; }")
         self.build_ui()
         self.done.connect(self.handle_done)
@@ -1169,20 +1602,26 @@ class SFTPPaneWidget(QFrame):
         pane_title.setStyleSheet("color: #6b7280; font-size: 12px; font-weight: 700;")
         top.addWidget(pane_title)
 
-        self.profile_combo = QComboBox()
         source_profiles = self.controller.sftp_source_profiles()
-        for profile in source_profiles:
-            self.profile_combo.addItem(profile.name, profile.id)
         if self.state.profile_id is None and source_profiles:
             self.state.profile_id = source_profiles[0].id
-        if self.state.profile_id is not None:
-            index = self.profile_combo.findData(self.state.profile_id)
-            if index < 0 and source_profiles:
-                self.state.profile_id = source_profiles[0].id
-                index = 0
-            self.profile_combo.setCurrentIndex(max(0, index))
-        self.profile_combo.currentIndexChanged.connect(lambda _index: self.change_profile())
-        top.addWidget(self.profile_combo, 1)
+        if self.show_profile_combo:
+            self.profile_combo = QComboBox()
+            for profile in source_profiles:
+                self.profile_combo.addItem(profile.name, profile.id)
+            if self.state.profile_id is not None:
+                index = self.profile_combo.findData(self.state.profile_id)
+                if index < 0 and source_profiles:
+                    self.state.profile_id = source_profiles[0].id
+                    index = 0
+                self.profile_combo.setCurrentIndex(max(0, index))
+            self.profile_combo.currentIndexChanged.connect(lambda _index: self.change_profile())
+            top.addWidget(self.profile_combo, 1)
+        else:
+            profile = self.current_profile()
+            host_label = QLabel(profile.target_address if profile is not None and profile.target_address else "未填写目标主机")
+            host_label.setStyleSheet("color: #6b7280; font-size: 12px;")
+            top.addWidget(host_label, 1)
 
         self.status_pill = StatusPill(self.state.status, status_color(self.state.status))
         top.addWidget(self.status_pill)
@@ -1626,7 +2065,8 @@ class MainWindow(QMainWindow):
         self.sftp_connection_guard = threading.RLock()
         self.file_sidebar_visible = False
         self.directory_cache: dict[tuple[str, str], tuple[list[RemoteFileEntry], str]] = {}
-        self.sftp_workspace_states_by_profile: dict[str, list[SFTPPaneState]] = {}
+        self.sftp_workspace_tabs_by_profile: dict[str, list[SFTPTabState]] = {}
+        self.sftp_workspace_selected_tab_by_profile: dict[str, int] = {}
 
         self.setWindowTitle(APP_NAME)
         self.resize(1180, 760)
@@ -1966,7 +2406,7 @@ class MainWindow(QMainWindow):
             webbrowser.open(profile.local_url)
 
     def render_sftp_workspace(self, profile: SSHProfile) -> None:
-        states = self.ensure_sftp_workspace_states(profile)
+        states = self.ensure_sftp_workspace_tabs(profile)
         header = QFrame()
         header.setStyleSheet("background: rgba(255,255,255,0.92); border-bottom: 1px solid #d9dfdd;")
         header_layout = QHBoxLayout(header)
@@ -1977,9 +2417,9 @@ class MainWindow(QMainWindow):
         name = QLabel(profile.name)
         name.setStyleSheet("font-size: 17px; font-weight: 750;")
         header_layout.addWidget(name)
-        header_layout.addWidget(StatusPill("左右双栏", "#6f4db0"))
+        header_layout.addWidget(StatusPill(f"{len(states)} 个标签", "#245fc7"))
 
-        detail = QLabel("来源：终端工作区 / 自定义 SFTP")
+        detail = QLabel("默认本地，可在标签内选择终端工作区或自定义 SFTP")
         detail.setStyleSheet("color: #6b7280; font-size: 12px;")
         header_layout.addWidget(detail, 1)
 
@@ -1993,52 +2433,151 @@ class MainWindow(QMainWindow):
         layout.setContentsMargins(10, 10, 10, 10)
         layout.setSpacing(8)
 
-        grid_holder = QWidget()
-        grid = QGridLayout(grid_holder)
-        grid.setContentsMargins(0, 0, 0, 0)
-        grid.setSpacing(8)
+        tabs = QTabWidget()
+        tabs.setTabsClosable(True)
+        tabs.tabCloseRequested.connect(lambda index, selected_profile=profile: self.close_sftp_tab(selected_profile, index))
+        tabs.currentChanged.connect(lambda index, selected_profile=profile: self.remember_sftp_tab_index(selected_profile, index))
+        for state in states:
+            tabs.addTab(self.sftp_tab_widget(profile, state), state.title)
 
-        for index, state in enumerate(states[:2]):
-            title = "左侧" if index == 0 else "右侧"
-            pane = SFTPPaneWidget(self, state, title)
-            grid.addWidget(pane, 0, index)
+        selected_index = self.sftp_workspace_selected_tab_by_profile.get(profile.id, 0)
+        if states:
+            tabs.setCurrentIndex(max(0, min(selected_index, len(states) - 1)))
 
-        grid.setRowStretch(0, 1)
-        grid.setColumnStretch(0, 1)
-        grid.setColumnStretch(1, 1)
-        layout.addWidget(grid_holder, 1)
+        add_tab = QToolButton()
+        add_tab.setText("+")
+        add_tab.setToolTip("新增 SFTP 标签")
+        add_tab.clicked.connect(lambda _checked=False, selected_profile=profile: self.add_sftp_tab(selected_profile))
+        tabs.setCornerWidget(add_tab, Qt.TopRightCorner)
+
+        layout.addWidget(tabs, 1)
         self.detail_layout.addWidget(container, 1)
 
     def sftp_source_profiles(self) -> list[SSHProfile]:
         return [profile for profile in self.store.profiles if profile.workspaceKind in {"terminal", "sftp"}]
 
-    def default_sftp_profile_id(self, profile: SSHProfile) -> str | None:
-        return profile.id
-
-    def secondary_sftp_profile_id(self, profile: SSHProfile) -> str | None:
-        source_profiles = self.sftp_source_profiles()
-        terminal = next((item for item in source_profiles if item.workspaceKind == "terminal"), None)
-        if terminal is not None:
-            return terminal.id
-        other = next((item for item in source_profiles if item.id != profile.id), None)
-        return other.id if other is not None else self.default_sftp_profile_id(profile)
-
-    def ensure_sftp_workspace_states(self, profile: SSHProfile) -> list[SFTPPaneState]:
-        states = self.sftp_workspace_states_by_profile.get(profile.id)
-        if states is None:
-            states = [
-                SFTPPaneState(self.default_sftp_profile_id(profile)),
-                SFTPPaneState(self.secondary_sftp_profile_id(profile)),
-            ]
+    def ensure_sftp_workspace_tabs(self, profile: SSHProfile) -> list[SFTPTabState]:
+        states = self.sftp_workspace_tabs_by_profile.get(profile.id)
+        if not states:
+            states = [SFTPTabState.local()]
         source_ids = {item.id for item in self.sftp_source_profiles()}
-        while len(states) < 2:
-            states.append(SFTPPaneState(self.secondary_sftp_profile_id(profile)))
-        states = states[:2]
-        for index, state in enumerate(states):
-            if state.profile_id not in source_ids:
-                state.profile_id = self.default_sftp_profile_id(profile) if index == 0 else self.secondary_sftp_profile_id(profile)
-        self.sftp_workspace_states_by_profile[profile.id] = states
+        for state in states:
+            if state.source_kind == "remote" and state.profile_id not in source_ids:
+                state.source_kind = None
+                state.profile_id = None
+                state.title = "选择主机"
+                state.entries = []
+                state.current_path = str(Path.home())
+                state.status = "选择主机"
+        self.sftp_workspace_tabs_by_profile[profile.id] = states
         return states
+
+    def sftp_tab_widget(self, workspace_profile: SSHProfile, state: SFTPTabState) -> QWidget:
+        if state.source_kind == "local":
+            return LocalSFTPPaneWidget(self, state)
+        if state.source_kind == "remote":
+            return SFTPPaneWidget(self, state, state.title, show_profile_combo=False)
+        return self.sftp_host_picker_widget(workspace_profile, state)
+
+    def sftp_host_picker_widget(self, workspace_profile: SSHProfile, state: SFTPTabState) -> QWidget:
+        widget = QScrollArea()
+        widget.setWidgetResizable(True)
+        widget.setFrameShape(QFrame.NoFrame)
+        holder = QWidget()
+        layout = QVBoxLayout(holder)
+        layout.setContentsMargins(24, 24, 24, 24)
+        layout.setSpacing(14)
+
+        title = QLabel("Hosts")
+        title.setStyleSheet("font-size: 20px; font-weight: 780; color: #111827;")
+        layout.addWidget(title)
+
+        grid_holder = QWidget()
+        grid = QGridLayout(grid_holder)
+        grid.setContentsMargins(0, 0, 0, 0)
+        grid.setSpacing(14)
+
+        sources = [("local", None, "127.0.0.1", "本地主机")]
+        for source in self.sftp_source_profiles():
+            subtitle = source.target_address or "未填写目标主机"
+            sources.append(("remote", source.id, source.name, subtitle))
+
+        for index, (kind, profile_id, name, subtitle) in enumerate(sources):
+            card = QPushButton()
+            card.setCursor(Qt.PointingHandCursor)
+            card.setMinimumHeight(86)
+            card.setStyleSheet(
+                """
+                QPushButton {
+                    text-align: left;
+                    padding: 14px 18px;
+                    border-radius: 8px;
+                    border: 1px solid #d6dfdc;
+                    background: white;
+                    font-size: 15px;
+                    font-weight: 700;
+                }
+                QPushButton:hover {
+                    border-color: #2b85ee;
+                    background: #f7fbff;
+                }
+                """
+            )
+            card.setText(f"{name}\n{subtitle}")
+            card.clicked.connect(
+                lambda _checked=False, selected_kind=kind, selected_profile_id=profile_id, selected_name=name: self.select_sftp_tab_source(
+                    workspace_profile,
+                    state,
+                    selected_kind,
+                    selected_profile_id,
+                    selected_name,
+                )
+            )
+            grid.addWidget(card, index // 2, index % 2)
+
+        grid.setColumnStretch(0, 1)
+        grid.setColumnStretch(1, 1)
+        layout.addWidget(grid_holder)
+        layout.addStretch(1)
+        widget.setWidget(holder)
+        return widget
+
+    def select_sftp_tab_source(
+        self,
+        workspace_profile: SSHProfile,
+        state: SFTPTabState,
+        kind: str,
+        profile_id: str | None,
+        title: str,
+    ) -> None:
+        state.source_kind = kind
+        state.profile_id = profile_id
+        state.title = title
+        state.entries = []
+        state.filter_text = ""
+        state.pending_path = None
+        state.current_path = str(Path.home()) if kind == "local" else "."
+        state.status = "本地文件" if kind == "local" else "文件空闲"
+        self.render_selected_profile()
+
+    def add_sftp_tab(self, profile: SSHProfile) -> None:
+        states = self.ensure_sftp_workspace_tabs(profile)
+        states.append(SFTPTabState.empty())
+        self.sftp_workspace_selected_tab_by_profile[profile.id] = len(states) - 1
+        self.render_selected_profile()
+
+    def close_sftp_tab(self, profile: SSHProfile, index: int) -> None:
+        states = self.ensure_sftp_workspace_tabs(profile)
+        if len(states) <= 1 or index < 0 or index >= len(states):
+            return
+        states.pop(index)
+        current = self.sftp_workspace_selected_tab_by_profile.get(profile.id, 0)
+        self.sftp_workspace_selected_tab_by_profile[profile.id] = max(0, min(current, len(states) - 1))
+        self.render_selected_profile()
+
+    def remember_sftp_tab_index(self, profile: SSHProfile, index: int) -> None:
+        if index >= 0:
+            self.sftp_workspace_selected_tab_by_profile[profile.id] = index
 
     def render_terminal(self, profile: SSHProfile) -> None:
         status_text = {

@@ -40,7 +40,11 @@ final class ProfileStore: ObservableObject {
     }
 
     func profiles(for kind: WorkspaceKind) -> [SSHProfile] {
-        profiles.filter { $0.workspaceKind == kind }
+        let matchingProfiles = profiles.filter { $0.workspaceKind == kind }
+        if kind == .sftp {
+            return Array(matchingProfiles.prefix(1))
+        }
+        return matchingProfiles
     }
 
     func binding(for profile: SSHProfile) -> BindingBox<SSHProfile> {
@@ -56,6 +60,12 @@ final class ProfileStore: ObservableObject {
 
     @discardableResult
     func addProfile(kind: WorkspaceKind = .jupyter) -> SSHProfile {
+        if kind == .sftp, let existingSFTPWorkspace = profiles.first(where: { $0.workspaceKind == .sftp }) {
+            selectedProfileID = existingSFTPWorkspace.id
+            save()
+            return existingSFTPWorkspace
+        }
+
         let kindCount = profiles.filter { $0.workspaceKind == kind }.count
         var profile = SSHProfile.blank(number: kindCount + 1, kind: kind)
         profile.name = nextProfileName(base: profile.name)
