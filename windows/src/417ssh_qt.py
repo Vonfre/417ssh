@@ -72,7 +72,7 @@ def app_version() -> str:
         text = version_file.read_text(encoding="utf-8").strip()
         if text:
             return text
-    return "0.2.12"
+    return "0.2.13"
 
 
 CURRENT_VERSION = app_version()
@@ -291,10 +291,21 @@ set "DST={batch_value(current_dir)}"
 set "BACKUP={batch_value(backup_dir)}"
 set "CLEANUP={batch_value(cleanup_dir)}"
 set "EXE=417ssh.exe"
+set /A WAIT_COUNT=0
+
+timeout /T 1 /NOBREAK >NUL
+taskkill /PID %APP_PID% /T >NUL 2>NUL
 
 :wait_for_app
 tasklist /FI "PID eq %APP_PID%" 2>NUL | find "%APP_PID%" >NUL
 if not errorlevel 1 (
+  if %WAIT_COUNT% GEQ 15 (
+    taskkill /PID %APP_PID% /T /F >NUL 2>NUL
+  )
+  if %WAIT_COUNT% GEQ 30 (
+    exit /B 1
+  )
+  set /A WAIT_COUNT+=1
   timeout /T 1 /NOBREAK >NUL
   goto wait_for_app
 )

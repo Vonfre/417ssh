@@ -25,7 +25,7 @@ final class UpdateManager: ObservableObject {
             case .downloading:
                 return "正在下载并准备安装"
             case .installing:
-                return "正在安装更新并重启应用"
+                return "正在安装更新并重启应用，如停留过久请退出当前应用"
             case .failed(let message):
                 return "更新失败：\(message)"
             }
@@ -195,9 +195,15 @@ final class UpdateManager: ObservableObject {
         guard targetAppURL.pathExtension == "app" else {
             throw UpdateError.notRunningFromAppBundle
         }
+        guard !targetAppURL.path.contains("/AppTranslocation/") else {
+            throw UpdateError.appTranslocation
+        }
 
+        let updatesDirectory = FileManager.default.temporaryDirectory.appendingPathComponent("417ssh-updates", isDirectory: true)
+        try FileManager.default.createDirectory(at: updatesDirectory, withIntermediateDirectories: true)
         let scriptURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("417ssh-install-\(UUID().uuidString).sh")
+        let logURL = updatesDirectory.appendingPathComponent("installer.log")
         let stagingURL = newAppURL.deletingLastPathComponent()
         let targetParentURL = targetAppURL.deletingLastPathComponent()
         let processIdentifier = ProcessInfo.processInfo.processIdentifier
@@ -211,13 +217,36 @@ final class UpdateManager: ObservableObject {
         TARGET_APP=\(shellQuoted(targetAppURL.path))
         TARGET_PARENT=\(shellQuoted(targetParentURL.path))
         STAGING_DIR=\(shellQuoted(stagingURL.path))
+        LOG_FILE=\(shellQuoted(logURL.path))
         BACKUP_APP="${TARGET_APP}.previous-update"
 
+        {
+          echo "==== 417ssh installer $(/bin/date) ===="
+          echo "pid=$APP_PID"
+          echo "new=$NEW_APP"
+          echo "target=$TARGET_APP"
+        } >> "$LOG_FILE" 2>&1
+
+        /bin/sleep 0.5
+        if /bin/kill -0 "$APP_PID" 2>/dev/null; then
+          echo "Requesting app quit" >> "$LOG_FILE" 2>&1
+          /bin/kill -TERM "$APP_PID" 2>/dev/null || true
+        fi
+
+        WAIT_COUNT=0
         while /bin/kill -0 "$APP_PID" 2>/dev/null; do
-          /bin/sleep 0.2
+          if [ "$WAIT_COUNT" -ge 40 ]; then
+            echo "Force killing app" >> "$LOG_FILE" 2>&1
+            /bin/kill -KILL "$APP_PID" 2>/dev/null || true
+            break
+          fi
+          WAIT_COUNT=$((WAIT_COUNT + 1))
+          /bin/sleep 0.25
         done
+        /bin/sleep 0.3
 
         if ! /bin/mkdir -p "$TARGET_PARENT"; then
+          echo "Failed to create target parent: $TARGET_PARENT" >> "$LOG_FILE" 2>&1
           /usr/bin/open "$TARGET_APP" || true
           exit 1
         fi
@@ -225,12 +254,14 @@ final class UpdateManager: ObservableObject {
         /bin/rm -rf "$BACKUP_APP"
         if [ -d "$TARGET_APP" ]; then
           if ! /bin/mv "$TARGET_APP" "$BACKUP_APP"; then
+            echo "Failed to move current app to backup" >> "$LOG_FILE" 2>&1
             /usr/bin/open "$TARGET_APP" || true
             exit 1
           fi
         fi
 
         if /usr/bin/ditto "$NEW_APP" "$TARGET_APP"; then
+          echo "Install succeeded" >> "$LOG_FILE" 2>&1
           /bin/rm -rf "$BACKUP_APP"
           /bin/rm -rf "$STAGING_DIR"
           /usr/bin/open "$TARGET_APP"
@@ -238,6 +269,7 @@ final class UpdateManager: ObservableObject {
           exit 0
         fi
 
+        echo "Install failed; restoring backup if needed" >> "$LOG_FILE" 2>&1
         if [ -d "$BACKUP_APP" ] && [ ! -d "$TARGET_APP" ]; then
           /bin/mv "$BACKUP_APP" "$TARGET_APP"
         fi
@@ -249,8 +281,12 @@ final class UpdateManager: ObservableObject {
         try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: scriptURL.path)
 
         let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/bin/bash")
-        process.arguments = [scriptURL.path]
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/nohup")
+        process.arguments = ["/bin/bash", scriptURL.path]
+        if let nullHandle = FileHandle(forWritingAtPath: "/dev/null") {
+            process.standardOutput = nullHandle
+            process.standardError = nullHandle
+        }
         try process.run()
     }
 
@@ -350,6 +386,7 @@ private enum UpdateError: LocalizedError {
     case invalidAssetURL
     case appBundleNotFound
     case notRunningFromAppBundle
+    case appTranslocation
     case processFailed(String, String)
 
     var errorDescription: String? {
@@ -365,6 +402,8 @@ private enum UpdateError: LocalizedError {
             return "更新包里没有找到 417ssh.app"
         case .notRunningFromAppBundle:
             return "当前不是从 417ssh.app 运行，不能自动替换应用文件"
+        case .appTranslocation:
+            return "当前应用处于 macOS 隔离转移路径，不能自动替换。请先把 417ssh.app 放到 Applications 后再更新。"
         case .processFailed(let command, let message):
             if message.isEmpty {
                 return "\(command) 执行失败"
