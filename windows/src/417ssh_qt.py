@@ -74,7 +74,7 @@ def app_version() -> str:
         text = version_file.read_text(encoding="utf-8").strip()
         if text:
             return text
-    return "0.3.1"
+    return "0.3.2"
 
 
 CURRENT_VERSION = app_version()
@@ -758,6 +758,8 @@ class RemoteFileTree(QTreeWidget):
         super().__init__()
         self.setAcceptDrops(True)
         self.setDragDropMode(QTreeWidget.DropOnly)
+        self.setSortingEnabled(True)
+        self.sortByColumn(0, Qt.AscendingOrder)
         self.setContextMenuPolicy(Qt.CustomContextMenu)
         self.customContextMenuRequested.connect(self.show_context_menu)
 
@@ -788,6 +790,35 @@ class RemoteFileTree(QTreeWidget):
         super().dropEvent(event)
 
 
+class RemoteFileTreeItem(QTreeWidgetItem):
+    def __lt__(self, other) -> bool:
+        tree = self.treeWidget()
+        column = tree.sortColumn() if tree is not None else 0
+
+        self_is_parent = bool(self.data(0, Qt.UserRole + 6))
+        other_is_parent = bool(other.data(0, Qt.UserRole + 6))
+        if self_is_parent != other_is_parent:
+            return self_is_parent
+
+        self_is_dir = bool(self.data(0, Qt.UserRole + 1))
+        other_is_dir = bool(other.data(0, Qt.UserRole + 1))
+        if self_is_dir != other_is_dir:
+            return self_is_dir
+
+        role_by_column = {
+            0: Qt.UserRole + 2,
+            1: Qt.UserRole + 3,
+            2: Qt.UserRole + 4,
+            3: Qt.UserRole + 5,
+        }
+        role = role_by_column.get(column, Qt.UserRole + 2)
+        left = self.data(0, role)
+        right = other.data(0, role)
+        if left == right:
+            return str(self.data(0, Qt.UserRole + 2)) < str(other.data(0, Qt.UserRole + 2))
+        return left < right
+
+
 class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
@@ -815,6 +846,8 @@ class MainWindow(QMainWindow):
         self.sftp_connection = None
         self.sftp_connection_profile_id: str | None = None
         self.sftp_lock = threading.RLock()
+        self.file_sidebar_visible = False
+        self.directory_cache: dict[tuple[str, str], tuple[list[RemoteFileEntry], str]] = {}
 
         self.setWindowTitle(APP_NAME)
         self.resize(1180, 760)
@@ -1162,9 +1195,13 @@ class MainWindow(QMainWindow):
         config = QPushButton("配置")
         config.clicked.connect(lambda: self.edit_profile(profile))
         controls.addWidget(config)
-        refresh_files = QPushButton("刷新文件")
-        refresh_files.clicked.connect(lambda: self.refresh_files(profile))
-        controls.addWidget(refresh_files)
+        file_toggle = QPushButton("隐藏文件" if self.file_sidebar_visible else "文件")
+        file_toggle.clicked.connect(lambda: self.toggle_file_sidebar(profile))
+        controls.addWidget(file_toggle)
+        if self.file_sidebar_visible:
+            refresh_files = QPushButton("刷新文件")
+            refresh_files.clicked.connect(lambda: self.refresh_files(profile))
+            controls.addWidget(refresh_files)
         native = QPushButton("原生终端")
         native.clicked.connect(lambda: self.open_native_terminal(profile))
         controls.addWidget(native)
@@ -1177,11 +1214,18 @@ class MainWindow(QMainWindow):
         splitter = QSplitter(Qt.Horizontal)
         splitter.setChildrenCollapsible(False)
         splitter.addWidget(self.terminal_pane(profile))
-        splitter.addWidget(self.file_pane(profile))
         splitter.setStretchFactor(0, 1)
-        splitter.setStretchFactor(1, 1)
+        if self.file_sidebar_visible:
+            splitter.addWidget(self.file_pane(profile))
+            splitter.setStretchFactor(1, 1)
         layout.addWidget(splitter, 1)
         self.detail_layout.addWidget(container, 1)
+
+    def toggle_file_sidebar(self, profile: SSHProfile) -> None:
+        self.file_sidebar_visible = not self.file_sidebar_visible
+        self.render_selected_profile()
+        if self.file_sidebar_visible:
+            self.refresh_files(profile)
 
     def terminal_pane(self, profile: SSHProfile) -> QWidget:
         pane = QFrame()
@@ -1437,6 +1481,7 @@ class MainWindow(QMainWindow):
                 if refresh_path is None:
                     self.bridge.sftp_status.emit("文件完成")
                 else:
+                    self.invalidate_directory_cache(profile, refresh_path)
                     entries, actual = self.list_remote_directory(profile, refresh_path)
                     self.bridge.sftp_done.emit(entries, actual)
             except Exception as exc:
@@ -1446,8 +1491,7 @@ class MainWindow(QMainWindow):
 
     def refresh_files(self, profile: SSHProfile, path: str | None = None) -> None:
         remote_path = (path or self.current_remote_path or ".").strip() or "."
-        self.sftp_status = "文件处理中"
-        self.bridge.sftp_status.emit(self.sftp_status)
+        self.begin_remote_navigation(profile, remote_path)
 
         def work() -> None:
             try:
@@ -1457,6 +1501,41 @@ class MainWindow(QMainWindow):
                 self.bridge.sftp_error.emit(str(exc))
 
         threading.Thread(target=work, name="SFTPList", daemon=True).start()
+
+    def begin_remote_navigation(self, profile: SSHProfile, remote_path: str) -> None:
+        self.sftp_status = "文件处理中"
+        cache_key = self.directory_cache_key(profile, remote_path)
+        cached = self.directory_cache.get(cache_key)
+        if cached is not None:
+            entries, actual = cached
+            self.remote_entries = list(entries)
+            self.current_remote_path = actual
+        else:
+            self.current_remote_path = remote_path
+            parent = self.parent_remote_entry(remote_path)
+            self.remote_entries = [parent] if parent is not None else []
+        self.render_selected_profile()
+
+    def directory_cache_key(self, profile: SSHProfile, path: str) -> tuple[str, str]:
+        normalized = (path or ".").strip() or "."
+        return profile.id, normalized
+
+    def invalidate_directory_cache(self, profile: SSHProfile, path: str) -> None:
+        self.directory_cache.pop(self.directory_cache_key(profile, path), None)
+
+    def parent_remote_entry(self, path: str) -> RemoteFileEntry | None:
+        trimmed = (path or ".").strip()
+        if not trimmed or trimmed in {".", "/", "~"}:
+            return None
+        return RemoteFileEntry(
+            name="..",
+            path=posixpath.dirname(trimmed.rstrip("/")) or "/",
+            is_dir=True,
+            is_link=False,
+            permissions="上级目录",
+            size="",
+            modified="",
+        )
 
     def list_remote_directory(self, profile: SSHProfile, path: str) -> tuple[list[RemoteFileEntry], str]:
         def action(sftp, _connection) -> tuple[list[RemoteFileEntry], str]:
@@ -1499,6 +1578,10 @@ class MainWindow(QMainWindow):
     def handle_sftp_done(self, entries: list, actual: str) -> None:
         self.remote_entries = list(entries)
         self.current_remote_path = actual
+        if self.store.selected() is not None:
+            profile = self.store.selected()
+            if profile is not None:
+                self.directory_cache[self.directory_cache_key(profile, actual)] = (list(entries), actual)
         self.sftp_status = "文件完成"
         self.render_selected_profile()
 
@@ -1522,10 +1605,36 @@ class MainWindow(QMainWindow):
         for entry in self.remote_entries:
             if needle and needle not in entry.name.lower():
                 continue
-            item = QTreeWidgetItem([entry.name, entry.modified, entry.size, entry.kind])
+            item = RemoteFileTreeItem([entry.name, entry.modified, entry.size, entry.kind])
             item.setData(0, Qt.UserRole, entry.path)
             item.setData(0, Qt.UserRole + 1, entry.is_dir)
+            item.setData(0, Qt.UserRole + 2, entry.name.lower())
+            item.setData(0, Qt.UserRole + 3, entry.modified)
+            item.setData(0, Qt.UserRole + 4, self.size_label_to_bytes(entry.size))
+            item.setData(0, Qt.UserRole + 5, entry.kind)
+            item.setData(0, Qt.UserRole + 6, entry.name == "..")
             tree.addTopLevelItem(item)
+
+    def size_label_to_bytes(self, value: str) -> int:
+        text = (value or "").strip()
+        if not text or text == "--":
+            return -1
+        parts = text.split()
+        if not parts:
+            return -1
+        try:
+            number = float(parts[0])
+        except ValueError:
+            return -1
+        unit = parts[1].upper() if len(parts) > 1 else "B"
+        multiplier = {
+            "B": 1,
+            "KB": 1024,
+            "MB": 1024 ** 2,
+            "GB": 1024 ** 3,
+            "TB": 1024 ** 4,
+        }.get(unit, 1)
+        return int(number * multiplier)
 
     def selected_remote_entry(self) -> RemoteFileEntry | None:
         tree = getattr(self, "file_tree", None)
@@ -1784,6 +1893,7 @@ cp -a -- "$src" "$target_dir/"
             try:
                 for local in paths:
                     self.upload_path(profile, Path(local), remote_dir)
+                self.invalidate_directory_cache(profile, remote_dir)
                 entries, actual = self.list_remote_directory(profile, remote_dir)
                 self.bridge.sftp_done.emit(entries, actual)
             except Exception as exc:
@@ -1997,6 +2107,7 @@ cp -a -- "$src" "$target_dir/"
 
     def save_profile(self, profile: SSHProfile) -> None:
         self.close_sftp_connection()
+        self.directory_cache = {}
         self.store.update(profile)
         self.store.selected_profile_id = profile.id
         self.refresh_sidebar()

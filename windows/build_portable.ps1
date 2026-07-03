@@ -2,7 +2,7 @@ $ErrorActionPreference = "Stop"
 Set-Location $PSScriptRoot
 
 $versionFile = Join-Path $PSScriptRoot "VERSION"
-$version = if ($env:VERSION) { $env:VERSION } elseif (Test-Path $versionFile) { (Get-Content $versionFile -Raw).Trim() } else { "0.3.1" }
+$version = if ($env:VERSION) { $env:VERSION } elseif (Test-Path $versionFile) { (Get-Content $versionFile -Raw).Trim() } else { "0.3.2" }
 $appName = "417ssh"
 $exePath = Join-Path $PSScriptRoot "dist\417ssh.exe"
 $stagingRoot = Join-Path $PSScriptRoot "build\portable"

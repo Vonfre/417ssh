@@ -958,6 +958,7 @@ private struct TerminalWorkspaceView: View {
 
     @State private var selectedEntry: RemoteFileEntry?
     @State private var remotePathText = "."
+    @State private var isFileSidebarVisible = false
 
     private var currentProfile: SSHProfile {
         profileBox.get()
@@ -975,12 +976,15 @@ private struct TerminalWorkspaceView: View {
                 terminalPane
                     .frame(minWidth: 360, maxWidth: .infinity, maxHeight: .infinity)
 
-                RemoteFileBrowserPane(
-                    profile: currentProfile,
-                    selectedEntry: $selectedEntry,
-                    remotePathText: $remotePathText
-                )
-                .frame(minWidth: 360, idealWidth: 520, maxWidth: 780, maxHeight: .infinity)
+                if isFileSidebarVisible {
+                    RemoteFileBrowserPane(
+                        profile: currentProfile,
+                        selectedEntry: $selectedEntry,
+                        remotePathText: $remotePathText
+                    )
+                    .frame(minWidth: 360, idealWidth: 520, maxWidth: 780, maxHeight: .infinity)
+                    .transition(.move(edge: .trailing).combined(with: .opacity))
+                }
             }
             .padding(12)
         }
@@ -1069,11 +1073,19 @@ private struct TerminalWorkspaceView: View {
         }
         .buttonStyle(.bordered)
 
-        Button(action: refreshFiles) {
-            Label("刷新文件", systemImage: "arrow.clockwise")
+        Button(action: toggleFileSidebar) {
+            Label(isFileSidebarVisible ? "隐藏文件" : "文件", systemImage: "sidebar.right")
         }
         .buttonStyle(.bordered)
-        .disabled(sftp.status == .running || currentProfile.targetHost.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+        .disabled(currentProfile.targetHost.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+
+        if isFileSidebarVisible {
+            Button(action: refreshFiles) {
+                Label("刷新文件", systemImage: "arrow.clockwise")
+            }
+            .buttonStyle(.bordered)
+            .disabled(sftp.status == .running || currentProfile.targetHost.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+        }
 
         Button {
             NativeTerminalLauncher.open(profile: currentProfile)
@@ -1183,6 +1195,13 @@ private struct TerminalWorkspaceView: View {
     private func refreshFiles() {
         sftp.refreshDirectory(profile: currentProfile, path: remotePathText)
     }
+
+    private func toggleFileSidebar() {
+        isFileSidebarVisible.toggle()
+        if isFileSidebarVisible {
+            refreshFiles()
+        }
+    }
 }
 
 private struct RemoteFileBrowserPane: View {
@@ -1193,6 +1212,8 @@ private struct RemoteFileBrowserPane: View {
     @Binding var remotePathText: String
     @State private var filterText = ""
     @State private var isDropTarget = false
+    @State private var sortColumn: RemoteFileSortColumn = .name
+    @State private var sortAscending = true
 
     var body: some View {
         VStack(spacing: 0) {
@@ -1335,8 +1356,10 @@ private struct RemoteFileBrowserPane: View {
 
             ZStack(alignment: .top) {
                 RemoteFileTableView(
-                    entries: filteredEntries,
+                    entries: displayedEntries,
                     selectedEntry: $selectedEntry,
+                    sortColumn: $sortColumn,
+                    sortAscending: $sortAscending,
                     currentPath: sftp.currentRemotePath,
                     loadingPath: sftp.loadingRemotePath,
                     canNavigate: sftp.canNavigateDirectories,
@@ -1344,18 +1367,18 @@ private struct RemoteFileBrowserPane: View {
                     onOpen: open,
                     onContextAction: handleContextAction
                 )
-                .opacity(filteredEntries.isEmpty ? 0 : 1)
+                .opacity(displayedEntries.isEmpty ? 0 : 1)
 
-                if filteredEntries.isEmpty {
+                if displayedEntries.isEmpty {
                     EmptyStateView(
                         systemImage: isLoadingDirectory ? "folder.badge.gearshape" : "folder",
-                        title: isLoadingDirectory ? "正在打开文件夹" : "还没有文件列表",
-                        subtitle: isLoadingDirectory ? loadingDirectoryText : (filterText.isEmpty ? "连接终端后会自动刷新，也可以点击刷新按钮" : "没有匹配的文件")
+                        title: isLoadingDirectory ? "正在读取目录" : "还没有文件列表",
+                        subtitle: isLoadingDirectory ? loadingDirectoryText : (filterText.isEmpty ? "展开文件侧栏后可以刷新，也可以拖拽上传" : "没有匹配的文件")
                     )
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
 
-                if isLoadingDirectory && !filteredEntries.isEmpty {
+                if isLoadingDirectory && !displayedEntries.isEmpty {
                     loadingBanner
                 }
             }
@@ -1428,6 +1451,10 @@ private struct RemoteFileBrowserPane: View {
         }
     }
 
+    private var displayedEntries: [RemoteFileEntry] {
+        sortedEntries(filteredEntries)
+    }
+
     private var visibleLogText: String {
         sftp.activeProfileID == profile.id ? sftp.logText : ""
     }
@@ -1444,6 +1471,38 @@ private struct RemoteFileBrowserPane: View {
 
     private func refresh() {
         sftp.refreshDirectory(profile: profile, path: remotePathText)
+    }
+
+    private func sortedEntries(_ entries: [RemoteFileEntry]) -> [RemoteFileEntry] {
+        let parentEntries = entries.filter { $0.name == ".." }
+        let regularEntries = entries.filter { $0.name != ".." }
+        let sorted = regularEntries.sorted { lhs, rhs in
+            if lhs.isDirectory != rhs.isDirectory {
+                return lhs.isDirectory && !rhs.isDirectory
+            }
+
+            let result: ComparisonResult
+            switch sortColumn {
+            case .name:
+                result = lhs.name.localizedStandardCompare(rhs.name)
+            case .modified:
+                result = lhs.modified.localizedStandardCompare(rhs.modified)
+            case .size:
+                if lhs.sizeBytes == rhs.sizeBytes {
+                    result = lhs.name.localizedStandardCompare(rhs.name)
+                } else {
+                    result = lhs.sizeBytes < rhs.sizeBytes ? .orderedAscending : .orderedDescending
+                }
+            case .kind:
+                result = lhs.kind.localizedStandardCompare(rhs.kind)
+            }
+
+            if result == .orderedSame {
+                return lhs.name.localizedStandardCompare(rhs.name) == .orderedAscending
+            }
+            return sortAscending ? result == .orderedAscending : result == .orderedDescending
+        }
+        return parentEntries + sorted
     }
 
     private func open(_ entry: RemoteFileEntry) {

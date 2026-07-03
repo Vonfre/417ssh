@@ -13,9 +13,18 @@ enum RemoteFileContextAction {
     case editPermissions
 }
 
+enum RemoteFileSortColumn: String {
+    case name
+    case modified
+    case size
+    case kind
+}
+
 struct RemoteFileTableView: NSViewRepresentable {
     let entries: [RemoteFileEntry]
     @Binding var selectedEntry: RemoteFileEntry?
+    @Binding var sortColumn: RemoteFileSortColumn
+    @Binding var sortAscending: Bool
     let currentPath: String
     let loadingPath: String?
     let canNavigate: Bool
@@ -64,6 +73,7 @@ struct RemoteFileTableView: NSViewRepresentable {
     func updateNSView(_ scrollView: NSScrollView, context: Context) {
         context.coordinator.parent = self
         context.coordinator.apply(entries: entries)
+        context.coordinator.applySortIndicator(column: sortColumn, ascending: sortAscending)
         context.coordinator.applyTableWidth()
         context.coordinator.applySelection(selectedEntry)
 
@@ -90,6 +100,7 @@ struct RemoteFileTableView: NSViewRepresentable {
         column.width = width
         column.minWidth = minWidth
         column.resizingMask = .userResizingMask
+        column.sortDescriptorPrototype = NSSortDescriptor(key: id.rawValue, ascending: true)
         tableView.addTableColumn(column)
     }
 
@@ -110,6 +121,14 @@ struct RemoteFileTableView: NSViewRepresentable {
             guard entries != newEntries else { return }
             entries = newEntries
             tableView?.reloadData()
+        }
+
+        func applySortIndicator(column: RemoteFileSortColumn, ascending: Bool) {
+            guard let tableView else { return }
+            let descriptor = NSSortDescriptor(key: column.rawValue, ascending: ascending)
+            if tableView.sortDescriptors != [descriptor] {
+                tableView.sortDescriptors = [descriptor]
+            }
         }
 
         func applyTableWidth() {
@@ -199,6 +218,17 @@ struct RemoteFileTableView: NSViewRepresentable {
                 return
             }
             parent.selectedEntry = entries[row]
+        }
+
+        func tableView(_ tableView: NSTableView, sortDescriptorsDidChange oldDescriptors: [NSSortDescriptor]) {
+            guard let descriptor = tableView.sortDescriptors.first,
+                  let key = descriptor.key,
+                  let column = RemoteFileSortColumn(rawValue: key)
+            else {
+                return
+            }
+            parent.sortColumn = column
+            parent.sortAscending = descriptor.ascending
         }
 
         @objc func doubleClick(_ sender: NSTableView) {

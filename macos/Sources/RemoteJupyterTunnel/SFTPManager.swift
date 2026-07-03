@@ -9,6 +9,7 @@ struct RemoteFileEntry: Identifiable, Equatable {
     let isLink: Bool
     let permissions: String
     let size: String
+    let sizeBytes: Int64
     let modified: String
 
     var id: String { path }
@@ -352,16 +353,17 @@ final class SFTPManager: ObservableObject {
         processOutputBuffer = ""
         transferProgressText = ""
         loadingRemotePath = path
+        activeProfileID = profile.id
         if let cached = directoryCache[cacheKey(profileID: profile.id, path: path)] {
             currentRemotePath = cached.path
             remoteEntries = cached.entries
         } else {
-            remoteEntries = []
+            currentRemotePath = path
+            remoteEntries = parentEntry(for: path).map { [$0] } ?? []
         }
         appendLog("刷新目录：\(path)")
         status = .running
         runningOperation = .list(path: path)
-        activeProfileID = profile.id
 
         let process = Process()
         let outputPipe = Pipe()
@@ -864,6 +866,7 @@ final class SFTPManager: ObservableObject {
                     isLink: kind == "l",
                     permissions: fields[4],
                     size: formattedByteCount(size),
+                    sizeBytes: size,
                     modified: fields[6]
                 )
             )
@@ -904,6 +907,7 @@ final class SFTPManager: ObservableObject {
             isLink: false,
             permissions: "上级目录",
             size: "",
+            sizeBytes: 0,
             modified: ""
         )
     }
