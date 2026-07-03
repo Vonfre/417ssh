@@ -1,8 +1,8 @@
 import Combine
+import AppKit
 import Foundation
 
 struct RemoteFileEntry: Identifiable, Equatable {
-    let id = UUID()
     let name: String
     let path: String
     let isDirectory: Bool
@@ -10,6 +10,8 @@ struct RemoteFileEntry: Identifiable, Equatable {
     let permissions: String
     let size: String
     let modified: String
+
+    var id: String { path }
 
     var kind: String {
         if isDirectory { return "文件夹" }
@@ -65,13 +67,14 @@ final class SFTPManager: ObservableObject {
     private var process: Process?
     private var outputPipe: Pipe?
     private var expectScriptURL: URL?
-    private var runningOperation: Operation = .transfer(refreshProfile: nil, refreshPath: nil)
+    private var processOutputBuffer = ""
+    private var runningOperation: Operation = .transfer(refreshProfile: nil, refreshPath: nil, completion: nil)
     private var directoryCache: [String: DirectorySnapshot] = [:]
 
     func upload(profile: SSHProfile, localPath: String, remotePath: String) {
         let recursiveFlag = isLocalDirectory(localPath) ? "-r " : ""
         let command = "put \(recursiveFlag)\(sftpQuote(localPath)) \(sftpQuote(remotePath))"
-        runSFTP(command: command, profile: profile, title: "上传", operation: .transfer(refreshProfile: profile, refreshPath: remotePath))
+        runSFTP(command: command, profile: profile, title: "上传", operation: .transfer(refreshProfile: profile, refreshPath: remotePath, completion: nil))
     }
 
     func download(profile: SSHProfile, remotePath: String, localPath: String) {
@@ -81,7 +84,150 @@ final class SFTPManager: ObservableObject {
     func download(profile: SSHProfile, remotePath: String, localPath: String, isDirectory: Bool) {
         let recursiveFlag = isDirectory ? "-r " : ""
         let command = "get \(recursiveFlag)\(sftpQuote(remotePath)) \(sftpQuote(localPath))"
-        runSFTP(command: command, profile: profile, title: "下载", operation: .transfer(refreshProfile: nil, refreshPath: nil))
+        runSFTP(command: command, profile: profile, title: "下载", operation: .transfer(refreshProfile: nil, refreshPath: nil, completion: nil))
+    }
+
+    func openFile(profile: SSHProfile, entry: RemoteFileEntry) {
+        guard !entry.isDirectory else {
+            refreshDirectory(profile: profile, path: entry.path)
+            return
+        }
+
+        do {
+            let temporaryDirectory = FileManager.default.temporaryDirectory
+                .appendingPathComponent("417ssh-open-\(UUID().uuidString)", isDirectory: true)
+            try FileManager.default.createDirectory(at: temporaryDirectory, withIntermediateDirectories: true)
+            let localURL = temporaryDirectory.appendingPathComponent(entry.name.isEmpty ? "remote-file" : entry.name)
+            let command = "get \(sftpQuote(entry.path)) \(sftpQuote(localURL.path))"
+            runSFTP(command: command, profile: profile, title: "打开文件", operation: .transfer(refreshProfile: nil, refreshPath: nil, completion: {
+                NSWorkspace.shared.open(localURL)
+            }))
+        } catch {
+            status = .failed("创建临时文件失败：\(error.localizedDescription)")
+            appendLog("创建临时文件失败：\(error.localizedDescription)")
+        }
+    }
+
+    func copyToDirectory(profile: SSHProfile, entry: RemoteFileEntry, targetDirectory: String, refreshPath: String) {
+        guard canStartFileCommand else { return }
+        let script = """
+        src=\(shellQuote(entry.path))
+        target_dir=\(shellQuote(normalizedRemotePath(targetDirectory)))
+        if [ "$src" = "/" ] || [ -z "$src" ]; then
+          printf 'ERROR\\t不能复制这个路径：%s\\0' "$src"
+          exit 2
+        fi
+        if [ ! -e "$src" ] && [ ! -L "$src" ]; then
+          printf 'ERROR\\t源文件不存在：%s\\0' "$src"
+          exit 2
+        fi
+        if [ ! -d "$target_dir" ]; then
+          printf 'ERROR\\t目标目录不存在：%s\\0' "$target_dir"
+          exit 2
+        fi
+        base=$(basename "$src")
+        if [ -e "$target_dir/$base" ] || [ -L "$target_dir/$base" ]; then
+          printf 'ERROR\\t目标目录中已存在：%s\\0' "$base"
+          exit 2
+        fi
+        if cp -a -- "$src" "$target_dir/"; then
+          printf 'OK\\t复制完成\\0'
+        else
+          printf 'ERROR\\t复制失败：%s\\0' "$src"
+          exit 1
+        fi
+        """
+        runRemoteFileCommand(script: script, profile: profile, title: "复制", refreshPath: refreshPath)
+    }
+
+    func rename(profile: SSHProfile, entry: RemoteFileEntry, newName: String, refreshPath: String) {
+        guard canStartFileCommand else { return }
+        let targetPath = joinedRemotePath(parentRemotePath(entry.path), newName)
+        let script = """
+        src=\(shellQuote(entry.path))
+        dst=\(shellQuote(targetPath))
+        if [ "$src" = "/" ] || [ -z "$src" ]; then
+          printf 'ERROR\\t不能重命名这个路径：%s\\0' "$src"
+          exit 2
+        fi
+        if [ ! -e "$src" ] && [ ! -L "$src" ]; then
+          printf 'ERROR\\t源文件不存在：%s\\0' "$src"
+          exit 2
+        fi
+        if [ -e "$dst" ] || [ -L "$dst" ]; then
+          printf 'ERROR\\t目标已存在：%s\\0' "$dst"
+          exit 2
+        fi
+        if mv -- "$src" "$dst"; then
+          printf 'OK\\t重命名完成\\0'
+        else
+          printf 'ERROR\\t重命名失败：%s\\0' "$src"
+          exit 1
+        fi
+        """
+        runRemoteFileCommand(script: script, profile: profile, title: "重命名", refreshPath: refreshPath)
+    }
+
+    func delete(profile: SSHProfile, entry: RemoteFileEntry, refreshPath: String) {
+        guard canStartFileCommand else { return }
+        let script = """
+        target=\(shellQuote(entry.path))
+        case "$target" in
+          ""|"/"|".")
+            printf 'ERROR\\t不能删除这个路径：%s\\0' "$target"
+            exit 2
+            ;;
+        esac
+        if [ ! -e "$target" ] && [ ! -L "$target" ]; then
+          printf 'ERROR\\t文件不存在：%s\\0' "$target"
+          exit 2
+        fi
+        if rm -rf -- "$target"; then
+          printf 'OK\\t删除完成\\0'
+        else
+          printf 'ERROR\\t删除失败：%s\\0' "$target"
+          exit 1
+        fi
+        """
+        runRemoteFileCommand(script: script, profile: profile, title: "删除", refreshPath: refreshPath)
+    }
+
+    func createDirectory(profile: SSHProfile, name: String, in remotePath: String) {
+        guard canStartFileCommand else { return }
+        let targetPath = joinedRemotePath(normalizedRemotePath(remotePath), name)
+        let script = """
+        target=\(shellQuote(targetPath))
+        if [ -e "$target" ] || [ -L "$target" ]; then
+          printf 'ERROR\\t目标已存在：%s\\0' "$target"
+          exit 2
+        fi
+        if mkdir -p -- "$target"; then
+          printf 'OK\\t新建文件夹完成\\0'
+        else
+          printf 'ERROR\\t新建文件夹失败：%s\\0' "$target"
+          exit 1
+        fi
+        """
+        runRemoteFileCommand(script: script, profile: profile, title: "新建文件夹", refreshPath: remotePath)
+    }
+
+    func changePermissions(profile: SSHProfile, entry: RemoteFileEntry, mode: String, refreshPath: String) {
+        guard canStartFileCommand else { return }
+        let script = """
+        target=\(shellQuote(entry.path))
+        mode=\(shellQuote(mode))
+        if [ ! -e "$target" ] && [ ! -L "$target" ]; then
+          printf 'ERROR\\t文件不存在：%s\\0' "$target"
+          exit 2
+        fi
+        if chmod "$mode" -- "$target"; then
+          printf 'OK\\t权限已更新\\0'
+        else
+          printf 'ERROR\\t权限修改失败：%s\\0' "$target"
+          exit 1
+        fi
+        """
+        runRemoteFileCommand(script: script, profile: profile, title: "修改权限", refreshPath: refreshPath)
     }
 
     func list(profile: SSHProfile, remotePath: String) {
@@ -121,6 +267,8 @@ final class SFTPManager: ObservableObject {
         cleanup()
         status = .idle
         loadingRemotePath = nil
+        processOutputBuffer = ""
+        runningOperation = .transfer(refreshProfile: nil, refreshPath: nil, completion: nil)
     }
 
     private func runSFTP(command: String, profile: SSHProfile, title: String, operation: Operation) {
@@ -132,6 +280,7 @@ final class SFTPManager: ObservableObject {
         }
 
         logText = ""
+        processOutputBuffer = ""
         transferProgressText = ""
         loadingRemotePath = nil
         appendLog("\(title)：\(command)")
@@ -145,11 +294,19 @@ final class SFTPManager: ObservableObject {
         process.standardError = outputPipe
 
         do {
-            let scriptURL = try writeSFTPExpectScript()
-            expectScriptURL = scriptURL
-            process.executableURL = URL(fileURLWithPath: "/usr/bin/expect")
-            process.arguments = [scriptURL.path] + profile.sftpArguments()
-            process.environment = mergedEnvironment(password: profile.sshPassword, command: command)
+            if profile.sshPassword.isEmpty {
+                let batchURL = try writeSFTPBatchFile(command: command)
+                expectScriptURL = batchURL
+                process.executableURL = URL(fileURLWithPath: "/usr/bin/sftp")
+                process.arguments = ["-b", batchURL.path] + sftpArguments(for: profile)
+                process.environment = mergedEnvironment(password: "", command: "")
+            } else {
+                let scriptURL = try writeSFTPExpectScript()
+                expectScriptURL = scriptURL
+                process.executableURL = URL(fileURLWithPath: "/usr/bin/expect")
+                process.arguments = [scriptURL.path] + sftpArguments(for: profile)
+                process.environment = mergedEnvironment(password: profile.sshPassword, command: command)
+            }
 
             outputPipe.fileHandleForReading.readabilityHandler = { [weak self] handle in
                 let data = handle.availableData
@@ -192,6 +349,7 @@ final class SFTPManager: ObservableObject {
         }
 
         logText = ""
+        processOutputBuffer = ""
         transferProgressText = ""
         loadingRemotePath = path
         if let cached = directoryCache[cacheKey(profileID: profile.id, path: path)] {
@@ -211,14 +369,22 @@ final class SFTPManager: ObservableObject {
         process.standardError = outputPipe
 
         do {
-            let scriptURL = try writeSSHCommandExpectScript()
-            expectScriptURL = scriptURL
-            process.executableURL = URL(fileURLWithPath: "/usr/bin/expect")
-            process.arguments = [scriptURL.path] + profile.remoteCommandArguments(
-                command: remoteDirectoryListCommand(for: path),
-                includeBatchMode: profile.sshPassword.isEmpty
-            )
-            process.environment = mergedEnvironment(password: profile.sshPassword, command: "")
+            let command = remoteDirectoryListCommand(for: path)
+            if profile.sshPassword.isEmpty {
+                process.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
+                process.arguments = remoteCommandArguments(for: profile, command: command, includeBatchMode: true)
+                process.environment = mergedEnvironment(password: "", command: "")
+            } else {
+                let scriptURL = try writeSSHCommandExpectScript()
+                expectScriptURL = scriptURL
+                process.executableURL = URL(fileURLWithPath: "/usr/bin/expect")
+                process.arguments = [scriptURL.path] + remoteCommandArguments(
+                    for: profile,
+                    command: command,
+                    includeBatchMode: false
+                )
+                process.environment = mergedEnvironment(password: profile.sshPassword, command: "")
+            }
 
             outputPipe.fileHandleForReading.readabilityHandler = { [weak self] handle in
                 let data = handle.availableData
@@ -245,6 +411,83 @@ final class SFTPManager: ObservableObject {
         }
     }
 
+    private var canStartFileCommand: Bool {
+        if status == .running {
+            if case .list = runningOperation {
+                stopCurrentProcessForReplacement()
+                return true
+            }
+
+            appendLog("当前正在处理文件，请等待结束后再执行操作。")
+            return false
+        }
+
+        return true
+    }
+
+    private func runRemoteFileCommand(script: String, profile: SSHProfile, title: String, refreshPath: String) {
+        guard !profile.targetHost.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            status = .failed("目标主机为空")
+            appendLog("目标主机为空，请先在配置里填写目标主机。")
+            return
+        }
+
+        logText = ""
+        processOutputBuffer = ""
+        transferProgressText = ""
+        loadingRemotePath = nil
+        appendLog("\(title)：\(refreshPath)")
+        status = .running
+        runningOperation = .fileCommand(title: title, refreshProfile: profile, refreshPath: refreshPath)
+        activeProfileID = profile.id
+
+        let process = Process()
+        let outputPipe = Pipe()
+        process.standardOutput = outputPipe
+        process.standardError = outputPipe
+
+        do {
+            let command = "sh -lc \(shellQuote(script))"
+            if profile.sshPassword.isEmpty {
+                process.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
+                process.arguments = remoteCommandArguments(for: profile, command: command, includeBatchMode: true)
+                process.environment = mergedEnvironment(password: "", command: "")
+            } else {
+                let scriptURL = try writeSSHCommandExpectScript()
+                expectScriptURL = scriptURL
+                process.executableURL = URL(fileURLWithPath: "/usr/bin/expect")
+                process.arguments = [scriptURL.path] + remoteCommandArguments(
+                    for: profile,
+                    command: command,
+                    includeBatchMode: false
+                )
+                process.environment = mergedEnvironment(password: profile.sshPassword, command: "")
+            }
+
+            outputPipe.fileHandleForReading.readabilityHandler = { [weak self] handle in
+                let data = handle.availableData
+                guard !data.isEmpty, let chunk = String(data: data, encoding: .utf8) else { return }
+                DispatchQueue.main.async {
+                    self?.appendLog(chunk)
+                }
+            }
+
+            process.terminationHandler = { [weak self] finishedProcess in
+                DispatchQueue.main.async {
+                    self?.handleTermination(finishedProcess)
+                }
+            }
+
+            self.process = process
+            self.outputPipe = outputPipe
+            try process.run()
+        } catch {
+            cleanup()
+            status = .failed(error.localizedDescription)
+            appendLog("\(title)失败：\(error.localizedDescription)")
+        }
+    }
+
     private func stopCurrentProcessForReplacement() {
         outputPipe?.fileHandleForReading.readabilityHandler = nil
         process?.terminationHandler = nil
@@ -252,7 +495,8 @@ final class SFTPManager: ObservableObject {
         cleanup()
         status = .idle
         loadingRemotePath = nil
-        runningOperation = .transfer(refreshProfile: nil, refreshPath: nil)
+        processOutputBuffer = ""
+        runningOperation = .transfer(refreshProfile: nil, refreshPath: nil, completion: nil)
     }
 
     private func handleTermination(_ finishedProcess: Process) {
@@ -263,7 +507,7 @@ final class SFTPManager: ObservableObject {
         if exitCode == 0 {
             status = .completed
             if case .list(let path) = finishedOperation {
-                let parsedListing = parseDirectoryListing(from: logText, requestedPath: path)
+                let parsedListing = parseDirectoryListing(from: processOutputBuffer, requestedPath: path)
                 currentRemotePath = parsedListing.path
                 remoteEntries = parsedListing.entries
                 let snapshot = DirectorySnapshot(path: parsedListing.path, entries: parsedListing.entries)
@@ -273,25 +517,37 @@ final class SFTPManager: ObservableObject {
                 if let warning = parsedListing.warning {
                     appendLog("目录刷新提示：\(warning)")
                 }
+            } else if case .fileCommand(let title, _, _) = finishedOperation {
+                transferProgressText = "\(title)完成"
             } else {
                 transferProgressText = "传输完成"
             }
             appendLog("SFTP 操作完成")
 
-            if case .transfer(let refreshProfile, let refreshPath) = finishedOperation,
-               let refreshProfile,
-               let refreshPath {
-                DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in
+            switch finishedOperation {
+            case .transfer(let refreshProfile, let refreshPath, let completion):
+                completion?()
+                if let refreshProfile, let refreshPath {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { [weak self] in
+                        self?.refreshDirectory(profile: refreshProfile, path: refreshPath)
+                    }
+                }
+            case .fileCommand(_, let refreshProfile, let refreshPath):
+                invalidateDirectoryCache(profileID: refreshProfile.id, path: refreshPath)
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak self] in
                     self?.refreshDirectory(profile: refreshProfile, path: refreshPath)
                 }
+            case .list:
+                break
             }
         } else {
-            let message = extractRemoteError(from: logText) ?? "SFTP 已退出，状态码：\(exitCode)"
+            let message = extractRemoteError(from: processOutputBuffer + logText) ?? "SFTP 已退出，状态码：\(exitCode)"
             status = .failed(message)
             loadingRemotePath = nil
             appendLog(message)
         }
-        runningOperation = .transfer(refreshProfile: nil, refreshPath: nil)
+        processOutputBuffer = ""
+        runningOperation = .transfer(refreshProfile: nil, refreshPath: nil, completion: nil)
     }
 
     private func cleanup() {
@@ -306,19 +562,34 @@ final class SFTPManager: ObservableObject {
     }
 
     private func appendLog(_ text: String) {
+        processOutputBuffer += text
+        if !isListingOperation, processOutputBuffer.count > 500_000 {
+            processOutputBuffer = String(processOutputBuffer.suffix(420_000))
+        }
+
         if case .transfer = runningOperation {
             updateTransferProgress(from: text)
         }
 
         if case .list = runningOperation {
-            logText += text
-        } else {
-            logText += text.hasSuffix("\n") ? text : text + "\n"
+            if logText.isEmpty {
+                logText = "正在读取远程目录...\n"
+            }
+            return
         }
+
+        logText += text.hasSuffix("\n") ? text : text + "\n"
 
         if logText.count > 80_000 {
             logText = String(logText.suffix(60_000))
         }
+    }
+
+    private var isListingOperation: Bool {
+        if case .list = runningOperation {
+            return true
+        }
+        return false
     }
 
     private func updateTransferProgress(from text: String) {
@@ -334,6 +605,22 @@ final class SFTPManager: ObservableObject {
         line
             .replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
             .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private func writeSFTPBatchFile(command: String) throws -> URL {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("RemoteJupyterTunnel", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+
+        let url = directory.appendingPathComponent("sftp-batch-\(UUID().uuidString).txt")
+        let script = command
+            .split(separator: "\n", omittingEmptySubsequences: true)
+            .map(String.init)
+            .joined(separator: "\n") + "\nbye\n"
+
+        try script.write(to: url, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
+        return url
     }
 
     private func writeSFTPExpectScript() throws -> URL {
@@ -461,6 +748,40 @@ final class SFTPManager: ObservableObject {
         environment["REMOTE_JUPYTER_TUNNEL_PASSWORD"] = password
         environment["REMOTE_JUPYTER_SFTP_COMMAND"] = command
         return environment
+    }
+
+    private func sftpArguments(for profile: SSHProfile) -> [String] {
+        var arguments = profile.sftpArguments()
+        let insertIndex = max(0, arguments.count - 1)
+        arguments.insert(contentsOf: sshMultiplexingArguments(for: profile), at: insertIndex)
+        return arguments
+    }
+
+    private func remoteCommandArguments(for profile: SSHProfile, command: String, includeBatchMode: Bool) -> [String] {
+        var arguments = profile.remoteCommandArguments(command: command, includeBatchMode: includeBatchMode)
+        let insertIndex = max(0, arguments.count - 2)
+        arguments.insert(contentsOf: sshMultiplexingArguments(for: profile), at: insertIndex)
+        return arguments
+    }
+
+    private func sshMultiplexingArguments(for profile: SSHProfile) -> [String] {
+        let controlPath = "/tmp/417ssh-\(sshControlSocketKey(for: profile)).sock"
+        return [
+            "-o", "ControlMaster=auto",
+            "-o", "ControlPersist=8m",
+            "-o", "ControlPath=\(controlPath)",
+            "-o", "StreamLocalBindUnlink=yes"
+        ]
+    }
+
+    private func sshControlSocketKey(for profile: SSHProfile) -> String {
+        let source = "\(profile.id.uuidString)|\(profile.targetAddress)|\(profile.targetPort)|\(profile.jumpAddress)"
+        var hash: UInt64 = 1_469_598_103_934_665_603
+        for byte in source.utf8 {
+            hash ^= UInt64(byte)
+            hash &*= 1_099_511_628_211
+        }
+        return String(hash, radix: 16)
     }
 
     private func sftpQuote(_ value: String) -> String {
@@ -591,6 +912,11 @@ final class SFTPManager: ObservableObject {
         ByteCountFormatter.string(fromByteCount: value, countStyle: .file)
     }
 
+    private func normalizedRemotePath(_ path: String) -> String {
+        let trimmed = path.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? "." : trimmed
+    }
+
     private func joinedRemotePath(_ basePath: String, _ name: String) -> String {
         if name == ".." {
             return parentRemotePath(basePath)
@@ -640,8 +966,14 @@ final class SFTPManager: ObservableObject {
         return "\(profileID?.uuidString ?? "unknown")::\(normalizedPath.isEmpty ? "." : normalizedPath)"
     }
 
+    private func invalidateDirectoryCache(profileID: UUID?, path: String) {
+        let key = cacheKey(profileID: profileID, path: path)
+        directoryCache.removeValue(forKey: key)
+    }
+
     private enum Operation {
-        case transfer(refreshProfile: SSHProfile?, refreshPath: String?)
+        case transfer(refreshProfile: SSHProfile?, refreshPath: String?, completion: (() -> Void)?)
         case list(path: String)
+        case fileCommand(title: String, refreshProfile: SSHProfile, refreshPath: String)
     }
 }

@@ -7,6 +7,7 @@
 - 建立 Jupyter 或 RStudio Server 本地端口转发，并在应用内嵌浏览器打开 `http://127.0.0.1:<端口>/<路径>`。
 - 提供简易内置 SSH 终端，也可以打开 Windows 原生 `cmd.exe` 里的 `ssh`。
 - 浏览远程目录、返回上级、筛选、拖拽上传、按钮上传文件/文件夹、下载文件/文件夹。
+- 文件列表支持右键操作：打开、下载、复制到目标目录、重命名、删除、新建文件夹和修改权限。
 
 ## 下载使用
 
@@ -70,6 +71,7 @@ dist\417ssh-<版本>-win-portable.zip
 - Jupyter/RStudio 页面优先使用 Qt WebEngine 内嵌在窗口里；如果当前 Python 环境没有 WebEngine，会回退到系统默认浏览器。
 - “原生终端”调用 Windows 自带 OpenSSH 的 `ssh` 命令；如果用密码登录，需要在弹出的终端里手动输入密码。
 - 如果要使用密钥，请在配置里填写 Windows 路径，例如 `C:\Users\you\.ssh\id_ed25519`。
-- `src\417ssh_windows.py` 是早期 Tkinter 版本，默认入口已经切换到更接近 macOS UI 的 `src\417ssh_qt.py`。
+- `src\417ssh_qt.py` 是当前 Windows 图形界面入口；`src\417ssh_windows.py` 保留共享的配置、SSH、隧道和 Paramiko 连接逻辑。
+- SFTP 会复用当前配置的一条 SSH 连接，连续进入目录或执行文件操作时会比反复重连更快。
 - 设置里可以检查 GitHub Releases 更新；检测到新版本后会下载 portable `.zip`，自动解压、替换当前 portable 文件夹并重启。
 - 发布新版本时，release asset 使用 `417ssh-<版本>-win-portable.zip` 命名。

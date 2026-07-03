@@ -1239,6 +1239,43 @@ private struct RemoteFileBrowserPane: View {
                             Label("下载选中项", systemImage: "arrow.down.doc")
                         }
                         .disabled(selectedEntry == nil || sftp.status == .running)
+                        Button(action: createFolder) {
+                            Label("新建文件夹", systemImage: "folder.badge.plus")
+                        }
+                        .disabled(sftp.status == .running)
+                        Divider()
+                        Button {
+                            if let selectedEntry {
+                                copyToTargetDirectory(selectedEntry)
+                            }
+                        } label: {
+                            Label("复制到目标目录", systemImage: "doc.on.doc")
+                        }
+                        .disabled(!canMutateSelectedEntry)
+                        Button {
+                            if let selectedEntry {
+                                rename(selectedEntry)
+                            }
+                        } label: {
+                            Label("重命名", systemImage: "pencil")
+                        }
+                        .disabled(!canMutateSelectedEntry)
+                        Button {
+                            if let selectedEntry {
+                                editPermissions(selectedEntry)
+                            }
+                        } label: {
+                            Label("修改权限", systemImage: "lock.open")
+                        }
+                        .disabled(!canMutateSelectedEntry)
+                        Button(role: .destructive) {
+                            if let selectedEntry {
+                                delete(selectedEntry)
+                            }
+                        } label: {
+                            Label("删除", systemImage: "trash")
+                        }
+                        .disabled(!canMutateSelectedEntry)
                     } label: {
                         Label("操作", systemImage: "ellipsis.circle")
                     }
@@ -1302,7 +1339,10 @@ private struct RemoteFileBrowserPane: View {
                     selectedEntry: $selectedEntry,
                     currentPath: sftp.currentRemotePath,
                     loadingPath: sftp.loadingRemotePath,
-                    onOpen: open
+                    canNavigate: sftp.canNavigateDirectories,
+                    canMutate: sftp.status != .running,
+                    onOpen: open,
+                    onContextAction: handleContextAction
                 )
                 .opacity(filteredEntries.isEmpty ? 0 : 1)
 
@@ -1397,6 +1437,11 @@ private struct RemoteFileBrowserPane: View {
         return trimmed.isEmpty || trimmed == "." || trimmed == "/" || trimmed == "~"
     }
 
+    private var canMutateSelectedEntry: Bool {
+        guard let selectedEntry else { return false }
+        return selectedEntry.name != ".." && sftp.status != .running
+    }
+
     private func refresh() {
         sftp.refreshDirectory(profile: profile, path: remotePathText)
     }
@@ -1404,12 +1449,48 @@ private struct RemoteFileBrowserPane: View {
     private func open(_ entry: RemoteFileEntry) {
         guard entry.isDirectory else {
             selectedEntry = entry
+            sftp.openFile(profile: profile, entry: entry)
             return
         }
 
         selectedEntry = nil
         remotePathText = entry.path
         sftp.refreshDirectory(profile: profile, path: entry.path)
+    }
+
+    private func handleContextAction(_ action: RemoteFileContextAction, entry: RemoteFileEntry?) {
+        switch action {
+        case .open:
+            if let entry {
+                open(entry)
+            }
+        case .download:
+            if let entry {
+                download(entry)
+            }
+        case .uploadHere:
+            chooseAndUpload()
+        case .copyToDirectory:
+            if let entry {
+                copyToTargetDirectory(entry)
+            }
+        case .rename:
+            if let entry {
+                rename(entry)
+            }
+        case .delete:
+            if let entry {
+                delete(entry)
+            }
+        case .refresh:
+            refresh()
+        case .newFolder:
+            createFolder()
+        case .editPermissions:
+            if let entry {
+                editPermissions(entry)
+            }
+        }
     }
 
     private func openPath(_ path: String) {
@@ -1494,7 +1575,10 @@ private struct RemoteFileBrowserPane: View {
 
     private func downloadSelected() {
         guard let selectedEntry else { return }
+        download(selectedEntry)
+    }
 
+    private func download(_ entry: RemoteFileEntry) {
         let panel = NSOpenPanel()
         panel.canChooseFiles = false
         panel.canChooseDirectories = true
@@ -1502,14 +1586,152 @@ private struct RemoteFileBrowserPane: View {
         panel.allowsMultipleSelection = false
 
         if panel.runModal() == .OK, let directoryURL = panel.url {
-            let destination = directoryURL.appendingPathComponent(selectedEntry.name).path
+            let destination = directoryURL.appendingPathComponent(entry.name).path
             sftp.download(
                 profile: profile,
-                remotePath: selectedEntry.path,
+                remotePath: entry.path,
                 localPath: destination,
-                isDirectory: selectedEntry.isDirectory
+                isDirectory: entry.isDirectory
             )
         }
+    }
+
+    private func copyToTargetDirectory(_ entry: RemoteFileEntry) {
+        guard let targetDirectory = promptText(
+            title: "复制到目标目录",
+            message: "输入远程目标目录路径。",
+            defaultValue: remotePathText
+        ) else {
+            return
+        }
+
+        sftp.copyToDirectory(
+            profile: profile,
+            entry: entry,
+            targetDirectory: targetDirectory,
+            refreshPath: remotePathText
+        )
+    }
+
+    private func rename(_ entry: RemoteFileEntry) {
+        guard let newName = promptText(
+            title: "重命名",
+            message: "输入新的名称。",
+            defaultValue: entry.name
+        ) else {
+            return
+        }
+
+        guard isValidRemoteBasename(newName) else {
+            showAlert(title: "名称不可用", message: "名称不能为空，也不能包含 /。")
+            return
+        }
+
+        guard newName != entry.name else { return }
+        selectedEntry = nil
+        sftp.rename(profile: profile, entry: entry, newName: newName, refreshPath: remotePathText)
+    }
+
+    private func delete(_ entry: RemoteFileEntry) {
+        let message = entry.isDirectory
+            ? "确定删除文件夹“\(entry.name)”及其中所有内容吗？"
+            : "确定删除文件“\(entry.name)”吗？"
+        guard confirmDestructive(title: "删除", message: message) else { return }
+
+        selectedEntry = nil
+        sftp.delete(profile: profile, entry: entry, refreshPath: remotePathText)
+    }
+
+    private func createFolder() {
+        guard let folderName = promptText(
+            title: "新建文件夹",
+            message: "输入文件夹名称。",
+            defaultValue: "新建文件夹"
+        ) else {
+            return
+        }
+
+        guard isValidRemoteBasename(folderName) else {
+            showAlert(title: "名称不可用", message: "名称不能为空，也不能包含 /。")
+            return
+        }
+
+        selectedEntry = nil
+        sftp.createDirectory(profile: profile, name: folderName, in: remotePathText)
+    }
+
+    private func editPermissions(_ entry: RemoteFileEntry) {
+        guard let mode = promptText(
+            title: "修改权限",
+            message: "输入 chmod 权限，例如 755、664 或 u+x。",
+            defaultValue: defaultPermissionMode(for: entry)
+        ) else {
+            return
+        }
+
+        guard !mode.isEmpty else {
+            showAlert(title: "权限不可用", message: "请输入 chmod 权限。")
+            return
+        }
+
+        sftp.changePermissions(profile: profile, entry: entry, mode: mode, refreshPath: remotePathText)
+    }
+
+    private func isValidRemoteBasename(_ name: String) -> Bool {
+        !name.isEmpty && !name.contains("/") && name != "." && name != ".."
+    }
+
+    private func defaultPermissionMode(for entry: RemoteFileEntry) -> String {
+        let permissions = Array(entry.permissions)
+        guard permissions.count >= 10 else {
+            return entry.isDirectory ? "755" : "644"
+        }
+
+        var mode = ""
+        for offset in stride(from: 1, through: 7, by: 3) {
+            var value = 0
+            if permissions[offset] == "r" { value += 4 }
+            if permissions[offset + 1] == "w" { value += 2 }
+            if permissions[offset + 2] != "-" { value += 1 }
+            mode += "\(value)"
+        }
+        return mode
+    }
+
+    private func promptText(title: String, message: String, defaultValue: String) -> String? {
+        let alert = NSAlert()
+        alert.messageText = title
+        alert.informativeText = message
+        alert.alertStyle = .informational
+        alert.addButton(withTitle: "确定")
+        alert.addButton(withTitle: "取消")
+
+        let textField = NSTextField(string: defaultValue)
+        textField.frame = NSRect(x: 0, y: 0, width: 320, height: 24)
+        textField.lineBreakMode = .byTruncatingMiddle
+        alert.accessoryView = textField
+
+        guard alert.runModal() == .alertFirstButtonReturn else { return nil }
+        return textField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private func confirmDestructive(title: String, message: String) -> Bool {
+        let alert = NSAlert()
+        alert.messageText = title
+        alert.informativeText = message
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "删除")
+        alert.addButton(withTitle: "取消")
+        return alert.runModal() == .alertFirstButtonReturn
+    }
+
+    private func showAlert(title: String, message: String) {
+        let alert = NSAlert()
+        alert.messageText = title
+        alert.informativeText = message
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "知道了")
+        alert.runModal()
     }
 
     private var sftpFooter: some View {

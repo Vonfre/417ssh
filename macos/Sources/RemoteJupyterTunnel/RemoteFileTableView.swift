@@ -1,12 +1,27 @@
 import AppKit
 import SwiftUI
 
+enum RemoteFileContextAction {
+    case open
+    case download
+    case uploadHere
+    case copyToDirectory
+    case rename
+    case delete
+    case refresh
+    case newFolder
+    case editPermissions
+}
+
 struct RemoteFileTableView: NSViewRepresentable {
     let entries: [RemoteFileEntry]
     @Binding var selectedEntry: RemoteFileEntry?
     let currentPath: String
     let loadingPath: String?
+    let canNavigate: Bool
+    let canMutate: Bool
     let onOpen: (RemoteFileEntry) -> Void
+    let onContextAction: (RemoteFileContextAction, RemoteFileEntry?) -> Void
 
     func makeNSView(context: Context) -> NSScrollView {
         let scrollView = NSScrollView()
@@ -17,7 +32,7 @@ struct RemoteFileTableView: NSViewRepresentable {
         scrollView.drawsBackground = true
         scrollView.backgroundColor = .textBackgroundColor
 
-        let tableView = NSTableView()
+        let tableView = RemoteFileNSTableView()
         tableView.usesAlternatingRowBackgroundColors = false
         tableView.selectionHighlightStyle = .regular
         tableView.allowsMultipleSelection = false
@@ -30,6 +45,10 @@ struct RemoteFileTableView: NSViewRepresentable {
         tableView.delegate = context.coordinator
         tableView.target = context.coordinator
         tableView.doubleAction = #selector(Coordinator.doubleClick(_:))
+        tableView.contextMenuProvider = { [weak coordinator = context.coordinator, weak tableView] event in
+            guard let tableView else { return nil }
+            return coordinator?.contextMenu(for: event, in: tableView)
+        }
 
         addColumn(to: tableView, id: .name, title: "名称", width: 300, minWidth: 240)
         addColumn(to: tableView, id: .modified, title: "修改时间", width: 150, minWidth: 145)
@@ -188,6 +207,82 @@ struct RemoteFileTableView: NSViewRepresentable {
             parent.onOpen(entries[row])
         }
 
+        func contextMenu(for event: NSEvent, in tableView: NSTableView) -> NSMenu {
+            let point = tableView.convert(event.locationInWindow, from: nil)
+            let row = tableView.row(at: point)
+            let entry = row >= 0 && row < entries.count ? entries[row] : nil
+
+            if let entry {
+                select(entry: entry, row: row, in: tableView)
+                return rowMenu(for: entry)
+            }
+
+            parent.selectedEntry = nil
+            tableView.deselectAll(nil)
+            return backgroundMenu()
+        }
+
+        private func select(entry: RemoteFileEntry, row: Int, in tableView: NSTableView) {
+            if tableView.selectedRow != row {
+                tableView.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
+            }
+            parent.selectedEntry = entry
+        }
+
+        private func rowMenu(for entry: RemoteFileEntry) -> NSMenu {
+            let menu = NSMenu()
+            let isParentEntry = entry.name == ".."
+            let canOpen = entry.isDirectory ? parent.canNavigate : parent.canMutate
+            menu.addItem(menuItem("打开", action: .open, entry: entry, image: "arrow.up.right.square", enabled: canOpen && !isParentEntry))
+            menu.addItem(menuItem("下载到本地", action: .download, entry: entry, image: "arrow.down.doc", enabled: parent.canMutate && !isParentEntry))
+            menu.addItem(NSMenuItem.separator())
+            menu.addItem(menuItem("复制到目标目录", action: .copyToDirectory, entry: entry, image: "doc.on.doc", enabled: parent.canMutate && !isParentEntry))
+            menu.addItem(menuItem("重命名", action: .rename, entry: entry, image: "pencil", enabled: parent.canMutate && !isParentEntry))
+            menu.addItem(menuItem("删除", action: .delete, entry: entry, image: "trash", enabled: parent.canMutate && !isParentEntry, destructive: true))
+            menu.addItem(NSMenuItem.separator())
+            menu.addItem(menuItem("刷新", action: .refresh, entry: nil, image: "arrow.clockwise", enabled: parent.canNavigate))
+            menu.addItem(menuItem("新建文件夹", action: .newFolder, entry: nil, image: "folder.badge.plus", enabled: parent.canMutate))
+            menu.addItem(menuItem("修改权限", action: .editPermissions, entry: entry, image: "lock.open", enabled: parent.canMutate && !isParentEntry))
+            return menu
+        }
+
+        private func backgroundMenu() -> NSMenu {
+            let menu = NSMenu()
+            menu.addItem(menuItem("刷新", action: .refresh, entry: nil, image: "arrow.clockwise", enabled: parent.canNavigate))
+            menu.addItem(menuItem("新建文件夹", action: .newFolder, entry: nil, image: "folder.badge.plus", enabled: parent.canMutate))
+            menu.addItem(menuItem("上传到当前目录", action: .uploadHere, entry: nil, image: "arrow.up.doc", enabled: parent.canMutate))
+            return menu
+        }
+
+        private func menuItem(
+            _ title: String,
+            action: RemoteFileContextAction,
+            entry: RemoteFileEntry?,
+            image: String,
+            enabled: Bool,
+            destructive: Bool = false
+        ) -> NSMenuItem {
+            let item = NSMenuItem(title: title, action: #selector(handleContextMenuItem(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = RemoteFileMenuCommand(action: action, entry: entry)
+            item.isEnabled = enabled
+            item.image = NSImage(systemSymbolName: image, accessibilityDescription: title)
+
+            if destructive {
+                item.attributedTitle = NSAttributedString(
+                    string: title,
+                    attributes: [.foregroundColor: NSColor.systemRed]
+                )
+            }
+
+            return item
+        }
+
+        @objc private func handleContextMenuItem(_ sender: NSMenuItem) {
+            guard let command = sender.representedObject as? RemoteFileMenuCommand else { return }
+            parent.onContextAction(command.action, command.entry)
+        }
+
         private func textCell(tableView: NSTableView, text: String, identifier: NSUserInterfaceItemIdentifier) -> NSTableCellView {
             let cell = tableView.makeView(withIdentifier: identifier, owner: self) as? RemoteTextCellView
                 ?? RemoteTextCellView(identifier: identifier)
@@ -216,6 +311,24 @@ private enum RemoteFileColumn: String {
 
     var identifier: NSUserInterfaceItemIdentifier {
         NSUserInterfaceItemIdentifier(rawValue)
+    }
+}
+
+private final class RemoteFileNSTableView: NSTableView {
+    var contextMenuProvider: ((NSEvent) -> NSMenu?)?
+
+    override func menu(for event: NSEvent) -> NSMenu? {
+        contextMenuProvider?(event) ?? super.menu(for: event)
+    }
+}
+
+private final class RemoteFileMenuCommand {
+    let action: RemoteFileContextAction
+    let entry: RemoteFileEntry?
+
+    init(action: RemoteFileContextAction, entry: RemoteFileEntry?) {
+        self.action = action
+        self.entry = entry
     }
 }
 

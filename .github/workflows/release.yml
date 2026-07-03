@@ -201,6 +201,11 @@ jobs:
           cat > release-notes.md <<NOTES
           417ssh $VERSION portable packages.
 
+          Highlights:
+          - SFTP file browser supports right-click actions: open, download, copy, rename, delete, refresh, new folder, and permission editing.
+          - macOS SFTP uses SSH connection multiplexing for faster repeated directory/file operations.
+          - Windows SFTP reuses the active Paramiko SSH connection for faster browsing and file actions.
+
           Downloads:
           - macOS: \`417ssh-$VERSION-mac-app.zip\`
           - Windows: \`417ssh-$VERSION-win-portable.zip\`
