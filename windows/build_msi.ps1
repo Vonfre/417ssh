@@ -2,7 +2,7 @@ $ErrorActionPreference = "Stop"
 Set-Location $PSScriptRoot
 
 $versionFile = Join-Path $PSScriptRoot "VERSION"
-$version = if ($env:VERSION) { $env:VERSION } elseif (Test-Path $versionFile) { (Get-Content $versionFile -Raw).Trim() } else { "0.4.6" }
+$version = if ($env:VERSION) { $env:VERSION } elseif (Test-Path $versionFile) { (Get-Content $versionFile -Raw).Trim() } else { "0.4.7" }
 throw "MSI 打包暂未适配当前 onedir portable 结构；官方 Windows 发布包请使用 build_portable.ps1 生成 417ssh-$version-win-portable.zip。"
 
 $appName = "417ssh"

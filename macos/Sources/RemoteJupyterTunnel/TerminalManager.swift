@@ -86,11 +86,7 @@ final class TerminalManager: ObservableObject {
                 onDirectory: { [weak self] directory in
                     Task { @MainActor in
                         guard let self, self.sessions[profile.id] != nil else { return }
-                        if let normalized = Self.normalizedTerminalDirectory(directory) {
-                            self.currentDirectoryByProfileID[profile.id] = normalized
-                        } else {
-                            self.currentDirectoryByProfileID.removeValue(forKey: profile.id)
-                        }
+                        self.storeCurrentDirectory(directory, for: profile.id)
                     }
                 },
                 onTerminate: { [weak self] exitCode in
@@ -275,12 +271,44 @@ final class TerminalManager: ObservableObject {
             return nil
         }
 
-        if let url = URL(string: directory), url.scheme == "file" {
-            let path = url.path.removingPercentEncoding ?? url.path
-            return path.isEmpty ? nil : path
+        let trimmed = directory.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let path = pathFromFileURLLikeTerminalDirectory(trimmed) {
+            let normalized = normalizedPOSIXPath(path)
+            return normalized.isEmpty ? nil : normalized
         }
 
-        return directory
+        return normalizedPOSIXPath(trimmed)
+    }
+
+    private func storeCurrentDirectory(_ directory: String?, for profileID: UUID, trustShorterPrefix: Bool = false) {
+        guard let normalized = Self.normalizedTerminalDirectory(directory) else {
+            currentDirectoryByProfileID.removeValue(forKey: profileID)
+            return
+        }
+
+        if !trustShorterPrefix,
+           let existing = currentDirectoryByProfileID[profileID],
+           Self.isProbablyTruncatedDirectory(existing: existing, candidate: normalized) {
+            return
+        }
+
+        currentDirectoryByProfileID[profileID] = normalized
+    }
+
+    private static func pathFromFileURLLikeTerminalDirectory(_ value: String) -> String? {
+        guard value.hasPrefix("file://") else { return nil }
+        let withoutScheme = String(value.dropFirst("file://".count))
+        guard let slashIndex = withoutScheme.firstIndex(of: "/") else { return nil }
+        let path = String(withoutScheme[slashIndex...])
+        return path.removingPercentEncoding ?? path
+    }
+
+    private static func isProbablyTruncatedDirectory(existing: String, candidate: String) -> Bool {
+        guard !existing.isEmpty, !candidate.isEmpty, existing != candidate else { return false }
+        guard existing.hasPrefix(candidate), existing.count > candidate.count else { return false }
+        let nextIndex = existing.index(existing.startIndex, offsetBy: candidate.count)
+        guard existing[nextIndex] != "/" else { return false }
+        return (existing as NSString).deletingLastPathComponent == (candidate as NSString).deletingLastPathComponent
     }
 
     private func recordInput(_ input: ArraySlice<UInt8>, for profileID: UUID) {
@@ -297,7 +325,7 @@ final class TerminalManager: ObservableObject {
             case 10, 13:
                 if let command = String(bytes: buffer, encoding: .utf8),
                    let directory = directoryAfterChangingDirectory(command: command, profileID: profileID) {
-                    currentDirectoryByProfileID[profileID] = directory
+                    storeCurrentDirectory(directory, for: profileID, trustShorterPrefix: true)
                 }
                 buffer.removeAll()
             case 0..<32:
@@ -316,9 +344,24 @@ final class TerminalManager: ObservableObject {
         let words = Self.shellWords(trimmed)
         guard words.first == "cd" else { return nil }
 
-        let target = words.dropFirst().first ?? "~"
+        let target = Self.cdTarget(from: words)
         guard target != "-" else { return nil }
         return Self.resolvedRemoteDirectory(target, base: currentDirectoryByProfileID[profileID])
+    }
+
+    private static func cdTarget(from words: [String]) -> String {
+        var parsesOptions = true
+        for word in words.dropFirst() {
+            if parsesOptions, word == "--" {
+                parsesOptions = false
+                continue
+            }
+            if parsesOptions, ["-L", "-P", "-e", "-@"].contains(word) {
+                continue
+            }
+            return word
+        }
+        return "~"
     }
 
     private static func shellWords(_ command: String) -> [String] {

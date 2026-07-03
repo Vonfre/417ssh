@@ -50,6 +50,7 @@ from PySide6.QtWidgets import (
     QToolButton,
     QTreeWidget,
     QTreeWidgetItem,
+    QStyle,
     QVBoxLayout,
     QWidget,
 )
@@ -85,7 +86,7 @@ def app_version() -> str:
         text = version_file.read_text(encoding="utf-8").strip()
         if text:
             return text
-    return "0.4.6"
+    return "0.4.7"
 
 
 CURRENT_VERSION = app_version()
@@ -746,6 +747,13 @@ def workspace_palette(kind: str) -> tuple[str, str]:
     if kind == "sftp":
         return "#805cbd", "#f3edff"
     return "#64706b", "#f1f4f3"
+
+
+def standard_icon(icon: QStyle.StandardPixmap) -> QIcon:
+    app = QApplication.instance()
+    if app is not None:
+        return app.style().standardIcon(icon)
+    return QIcon()
 
 
 class StatusPill(QLabel):
@@ -2633,6 +2641,7 @@ class MainWindow(QMainWindow):
             QPushButton::menu-indicator { width: 10px; }
             QToolButton { padding: 3px 7px; border-radius: 5px; color: #5f6b66; }
             QToolButton:hover { background: rgba(31,41,37,0.07); color: #1f2925; }
+            QToolButton:checked { background: #edf3ff; color: #2e5cc7; border: 1px solid #b7c9f4; }
             QLineEdit, QSpinBox, QComboBox { min-height: 26px; padding: 5px 7px; border: 1px solid #c8d2ce; border-radius: 6px; background: rgba(255,255,255,0.96); color: #1f2925; }
             QLineEdit:focus, QSpinBox:focus, QComboBox:focus { border-color: #98b1e5; }
             QPlainTextEdit, QTextEdit, QTreeWidget { border: 1px solid #d0d9d6; border-radius: 8px; background: rgba(255,255,255,0.96); selection-background-color: #dce8ff; }
@@ -3386,20 +3395,26 @@ class MainWindow(QMainWindow):
         terminal_sync_row = QHBoxLayout()
         terminal_sync_row.setSpacing(6)
         copy_path = QToolButton()
-        copy_path.setText("路径到终端")
+        copy_path.setIcon(standard_icon(QStyle.SP_ComputerIcon))
+        copy_path.setToolButtonStyle(Qt.ToolButtonIconOnly)
+        copy_path.setFixedSize(28, 28)
         copy_path.setToolTip("将 cd 当前 SFTP 目录输入到终端，回车后进入该目录")
         copy_path.clicked.connect(lambda _checked=False, selected_profile=profile: self.copy_sftp_path_to_terminal(selected_profile))
         terminal_sync_row.addWidget(copy_path)
         sync_path = QToolButton()
-        sync_path.setText("同步终端目录")
+        sync_path.setIcon(standard_icon(QStyle.SP_DirOpenIcon))
+        sync_path.setToolButtonStyle(Qt.ToolButtonIconOnly)
+        sync_path.setFixedSize(28, 28)
         sync_path.setToolTip("同步到终端当前文件夹")
         sync_path.clicked.connect(lambda _checked=False, selected_profile=profile: self.sync_sftp_to_terminal_directory(selected_profile))
         terminal_sync_row.addWidget(sync_path)
         auto_sync = QToolButton()
-        auto_sync.setText("自动同步")
+        auto_sync.setIcon(standard_icon(QStyle.SP_BrowserReload))
+        auto_sync.setToolButtonStyle(Qt.ToolButtonIconOnly)
+        auto_sync.setFixedSize(28, 28)
         auto_sync.setCheckable(True)
         auto_sync.setChecked(profile.id in self.auto_sync_terminal_directory_profile_ids)
-        auto_sync.setToolTip("自动同步终端文件夹")
+        auto_sync.setToolTip("自动同步终端文件夹" if profile.id not in self.auto_sync_terminal_directory_profile_ids else "已开启自动同步终端文件夹")
         auto_sync.clicked.connect(lambda _checked=False, selected_profile=profile: self.toggle_auto_sync_terminal_directory(selected_profile))
         terminal_sync_row.addWidget(auto_sync)
         terminal_sync_row.addStretch(1)
@@ -3407,6 +3422,9 @@ class MainWindow(QMainWindow):
 
         self.file_tree = RemoteFileTree()
         self.file_tree.drag_profile_id = profile.id
+        self.file_tree.setIconSize(QSize(16, 16))
+        self.file_tree.setIndentation(14)
+        self.file_tree.setStyleSheet("QTreeWidget::item { padding: 1px 0; }")
         self.file_tree.setHeaderLabels(["名称", "修改时间", "大小", "类型"])
         self.file_tree.setColumnWidth(0, 260)
         self.file_tree.itemDoubleClicked.connect(lambda _item, _column: self.open_selected_remote(profile))
@@ -3472,7 +3490,9 @@ class MainWindow(QMainWindow):
             payload = match.group(1)
             path = self.path_from_osc7_payload(payload)
             if path:
-                self.terminal_directories_by_profile[profile_id] = path
+                stored_path = self.store_terminal_directory(profile_id, path)
+                if not stored_path:
+                    return ""
                 profile = self.profile_by_id(profile_id)
                 should_sync = (
                     profile is not None
@@ -3483,7 +3503,7 @@ class MainWindow(QMainWindow):
                 )
                 if should_sync:
                     self.pending_terminal_directory_sync_profile_ids.discard(profile.id)
-                    QTimer.singleShot(0, lambda selected_profile=profile, selected_path=path: self.refresh_files(selected_profile, selected_path))
+                    QTimer.singleShot(0, lambda selected_profile=profile, selected_path=stored_path: self.refresh_files(selected_profile, selected_path))
             return ""
 
         return re.sub(r"\x1b]7;([^\x07\x1b]*)(?:\x07|\x1b\\)", update, text)
@@ -3520,9 +3540,9 @@ class MainWindow(QMainWindow):
             without_scheme = payload[len("file://"):]
             slash_index = without_scheme.find("/")
             if slash_index >= 0:
-                return urllib.parse.unquote(without_scheme[slash_index:])
+                return self.normalize_terminal_directory(urllib.parse.unquote(without_scheme[slash_index:]))
             return ""
-        return urllib.parse.unquote(payload)
+        return self.normalize_terminal_directory(urllib.parse.unquote(payload))
 
     def handle_terminal_status(self, profile_id: str, status: str, message: object) -> None:
         self.terminal_status_by_profile[profile_id] = status
@@ -3656,10 +3676,12 @@ class MainWindow(QMainWindow):
         directory = self.directory_after_cd_command(profile_id, command)
         if not directory:
             return
-        self.terminal_directories_by_profile[profile_id] = directory
+        stored_directory = self.store_terminal_directory(profile_id, directory, trust_shorter_prefix=True)
+        if not stored_directory:
+            return
         profile = self.profile_by_id(profile_id)
         if profile is not None and profile_id in self.auto_sync_terminal_directory_profile_ids:
-            QTimer.singleShot(0, lambda selected_profile=profile, selected_directory=directory: self.refresh_files(selected_profile, selected_directory))
+            QTimer.singleShot(0, lambda selected_profile=profile, selected_directory=stored_directory: self.refresh_files(selected_profile, selected_directory))
 
     def directory_after_cd_command(self, profile_id: str, command: str) -> str | None:
         try:
@@ -3668,10 +3690,21 @@ class MainWindow(QMainWindow):
             return None
         if not words or words[0] != "cd":
             return None
-        target = words[1] if len(words) > 1 else "~"
+        target = self.cd_target_from_words(words)
         if target == "-":
             return None
         return self.resolve_terminal_directory(target, self.terminal_directories_by_profile.get(profile_id))
+
+    def cd_target_from_words(self, words: list[str]) -> str:
+        parsing_options = True
+        for word in words[1:]:
+            if parsing_options and word == "--":
+                parsing_options = False
+                continue
+            if parsing_options and word in {"-L", "-P", "-e", "-@"}:
+                continue
+            return word
+        return "~"
 
     def resolve_terminal_directory(self, path: str, base: str | None) -> str:
         trimmed = path.strip()
@@ -3686,11 +3719,33 @@ class MainWindow(QMainWindow):
         return self.normalize_terminal_directory(posixpath.join(base, trimmed))
 
     def normalize_terminal_directory(self, path: str) -> str:
+        path = path.strip()
         if path == "~" or path.startswith("~/"):
             suffix = path[2:] if path.startswith("~/") else ""
             normalized = posixpath.normpath("/" + suffix).lstrip("/")
             return "~" if normalized == "." else f"~/{normalized}"
         return posixpath.normpath(path)
+
+    def store_terminal_directory(self, profile_id: str, directory: str, trust_shorter_prefix: bool = False) -> str | None:
+        normalized = self.normalize_terminal_directory(directory)
+        if not normalized or normalized == ".":
+            return None
+        existing = self.terminal_directories_by_profile.get(profile_id)
+        if not trust_shorter_prefix and existing and self.is_probably_truncated_directory(existing, normalized):
+            return None
+        self.terminal_directories_by_profile[profile_id] = normalized
+        return normalized
+
+    def is_probably_truncated_directory(self, existing: str, candidate: str) -> bool:
+        if not existing or not candidate or existing == candidate:
+            return False
+        if not existing.startswith(candidate):
+            return False
+        if len(existing) <= len(candidate):
+            return False
+        if existing[len(candidate)] == "/":
+            return False
+        return posixpath.dirname(existing) == posixpath.dirname(candidate)
 
     def open_native_terminal(self, profile: SSHProfile) -> None:
         command = subprocess.list2cmdline(["ssh"] + profile.terminal_ssh_args(include_batch_mode=False))
@@ -3943,6 +3998,12 @@ class MainWindow(QMainWindow):
 
     def make_remote_file_item(self, entry: RemoteFileEntry) -> RemoteFileTreeItem:
         item = RemoteFileTreeItem([entry.name, entry.modified, entry.size, entry.kind])
+        if entry.name == "..":
+            item.setIcon(0, standard_icon(QStyle.SP_ArrowUp))
+        elif entry.is_dir:
+            item.setIcon(0, standard_icon(QStyle.SP_DirIcon))
+        else:
+            item.setIcon(0, standard_icon(QStyle.SP_FileIcon))
         item.setData(0, Qt.UserRole, entry.path)
         item.setData(0, Qt.UserRole + 1, entry.is_dir)
         item.setData(0, Qt.UserRole + 2, entry.name.lower())
