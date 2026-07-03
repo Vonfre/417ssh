@@ -3938,12 +3938,12 @@ private struct RemoteFileBrowserPane: View {
             Button {
                 copySFTPPathToTerminal()
             } label: {
-                Label("将 SFTP 路径复制到终端", systemImage: "terminal")
+                Label("将 cd 路径复制到终端", systemImage: "terminal")
             }
             .labelStyle(.iconOnly)
             .buttonStyle(.plain)
             .foregroundStyle(.secondary)
-            .help("将当前 SFTP 目录路径复制到终端")
+            .help("将 cd 当前 SFTP 目录复制到终端，回车后进入该目录")
 
             Button {
                 requestAndSyncTerminalDirectory()
@@ -3992,20 +3992,17 @@ private struct RemoteFileBrowserPane: View {
 
     private func copySFTPPathToTerminal() {
         guard let terminalProfileID else { return }
-        terminal.sendText(remotePathText.shellQuotedForTerminalPaste, profileID: terminalProfileID)
+        terminal.sendText("cd \(remotePathText.shellQuotedForTerminalPaste)", profileID: terminalProfileID)
     }
 
     private func requestAndSyncTerminalDirectory() {
         guard let terminalProfileID else { return }
-        if let directory = terminal.currentDirectory(for: terminalProfileID) {
-            syncToTerminalDirectory(directory)
-        }
-        terminal.requestCurrentDirectory(profileID: terminalProfileID)
+        syncToTerminalDirectory(terminal.currentDirectory(for: terminalProfileID))
     }
 
     private func syncToTerminalDirectory(_ directory: String?) {
         guard let directory, !directory.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            showAlert(title: "还没有终端目录", message: "终端暂时没有上报当前目录，请先在终端里执行一次命令，或稍后再试。")
+            showAlert(title: "还没有终端目录", message: "还没有捕获到终端当前目录。请先在内置终端里执行一次 cd 命令，或使用支持 OSC 7 的 shell 提示符。")
             return
         }
 

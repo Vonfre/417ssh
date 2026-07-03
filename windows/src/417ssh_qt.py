@@ -79,7 +79,7 @@ def app_version() -> str:
         text = version_file.read_text(encoding="utf-8").strip()
         if text:
             return text
-    return "0.4.0"
+    return "0.4.1"
 
 
 CURRENT_VERSION = app_version()
@@ -2927,7 +2927,7 @@ class MainWindow(QMainWindow):
         terminal_sync_row.setSpacing(6)
         copy_path = QToolButton()
         copy_path.setText("路径到终端")
-        copy_path.setToolTip("将当前 SFTP 目录路径复制到终端")
+        copy_path.setToolTip("将 cd 当前 SFTP 目录放到终端输入框，回车后进入该目录")
         copy_path.clicked.connect(lambda _checked=False, selected_profile=profile: self.copy_sftp_path_to_terminal(selected_profile))
         terminal_sync_row.addWidget(copy_path)
         sync_path = QToolButton()
@@ -3042,14 +3042,20 @@ class MainWindow(QMainWindow):
             return
         self.send_terminal_text(text + "\n")
         self.command_input.clear()
-        if self.terminal_profile_id in self.auto_sync_terminal_directory_profile_ids:
-            QTimer.singleShot(350, self.request_terminal_directory)
+        if self.terminal_profile_id:
+            self.record_terminal_directory_command(self.terminal_profile_id, text)
 
     def copy_sftp_path_to_terminal(self, profile: SSHProfile) -> None:
         if self.terminal_profile_id != profile.id or self.terminal_status != "connected":
             QMessageBox.information(self, APP_NAME, "请先连接当前终端。")
             return
-        self.send_terminal_text(shlex.quote(self.current_remote_path or "."))
+        command = f"cd {shlex.quote(self.current_remote_path or '.')}"
+        command_input = getattr(self, "command_input", None)
+        if command_input is not None:
+            command_input.setText(command)
+            command_input.setFocus()
+        else:
+            self.send_terminal_text(command)
 
     def sync_sftp_to_terminal_directory(self, profile: SSHProfile) -> None:
         if self.terminal_profile_id != profile.id or self.terminal_status != "connected":
@@ -3059,21 +3065,60 @@ class MainWindow(QMainWindow):
         if directory:
             self.refresh_files(profile, directory)
         else:
-            self.pending_terminal_directory_sync_profile_ids.add(profile.id)
-        self.request_terminal_directory()
+            QMessageBox.information(self, APP_NAME, "还没有捕获到终端当前目录。请先在终端里执行一次 cd 命令，或使用支持 OSC 7 的 shell 提示符。")
 
     def toggle_auto_sync_terminal_directory(self, profile: SSHProfile) -> None:
         if profile.id in self.auto_sync_terminal_directory_profile_ids:
             self.auto_sync_terminal_directory_profile_ids.remove(profile.id)
         else:
             self.auto_sync_terminal_directory_profile_ids.add(profile.id)
-            self.sync_sftp_to_terminal_directory(profile)
+            directory = self.terminal_directories_by_profile.get(profile.id)
+            if directory:
+                self.refresh_files(profile, directory)
         self.render_selected_profile()
 
     def request_terminal_directory(self) -> None:
-        if self.terminal is None or self.terminal_status != "connected":
+        return
+
+    def record_terminal_directory_command(self, profile_id: str, command: str) -> None:
+        directory = self.directory_after_cd_command(profile_id, command)
+        if not directory:
             return
-        self.terminal.send(" printf '\\033]7;file://%s%s\\007' \"${HOSTNAME:-remote}\" \"$PWD\"\n")
+        self.terminal_directories_by_profile[profile_id] = directory
+        profile = self.profile_by_id(profile_id)
+        if profile is not None and profile_id in self.auto_sync_terminal_directory_profile_ids:
+            QTimer.singleShot(0, lambda selected_profile=profile, selected_directory=directory: self.refresh_files(selected_profile, selected_directory))
+
+    def directory_after_cd_command(self, profile_id: str, command: str) -> str | None:
+        try:
+            words = shlex.split(command.strip(), posix=True)
+        except ValueError:
+            return None
+        if not words or words[0] != "cd":
+            return None
+        target = words[1] if len(words) > 1 else "~"
+        if target == "-":
+            return None
+        return self.resolve_terminal_directory(target, self.terminal_directories_by_profile.get(profile_id))
+
+    def resolve_terminal_directory(self, path: str, base: str | None) -> str:
+        trimmed = path.strip()
+        if not trimmed:
+            return "~"
+        if trimmed == "~" or trimmed.startswith("~/") or trimmed.startswith("/"):
+            return self.normalize_terminal_directory(trimmed)
+        if not base:
+            return trimmed
+        if base == "~":
+            return self.normalize_terminal_directory(f"~/{trimmed}")
+        return self.normalize_terminal_directory(posixpath.join(base, trimmed))
+
+    def normalize_terminal_directory(self, path: str) -> str:
+        if path == "~" or path.startswith("~/"):
+            suffix = path[2:] if path.startswith("~/") else ""
+            normalized = posixpath.normpath("/" + suffix).lstrip("/")
+            return "~" if normalized == "." else f"~/{normalized}"
+        return posixpath.normpath(path)
 
     def open_native_terminal(self, profile: SSHProfile) -> None:
         command = subprocess.list2cmdline(["ssh"] + profile.terminal_ssh_args(include_batch_mode=False))

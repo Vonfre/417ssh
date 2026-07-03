@@ -45,6 +45,7 @@ final class TerminalManager: ObservableObject {
 
     private var sessions: [UUID: RemoteTerminalSession] = [:]
     private var disconnectingProfileIDs: Set<UUID> = []
+    private var inputBufferByProfileID: [UUID: [UInt8]] = [:]
 
     func connect(profile: SSHProfile) {
         if status(for: profile.id).isRunning, sessions[profile.id] != nil {
@@ -68,6 +69,11 @@ final class TerminalManager: ObservableObject {
         do {
             let terminalView = RemotePTYTerminalView(frame: .zero)
             terminalView.configureAppearance()
+            terminalView.onInput = { [weak self] input in
+                Task { @MainActor in
+                    self?.recordInput(input, for: profile.id)
+                }
+            }
 
             let delegate = RemotePTYTerminalDelegate(
                 profileID: profile.id,
@@ -126,6 +132,7 @@ final class TerminalManager: ObservableObject {
         statusByProfileID.removeAll()
         terminalTitleByProfileID.removeAll()
         currentDirectoryByProfileID.removeAll()
+        inputBufferByProfileID.removeAll()
         activeProfileID = nil
         status = .disconnected
         terminalTitle = "SSH 终端"
@@ -145,6 +152,7 @@ final class TerminalManager: ObservableObject {
         cleanupSession(profileID: profileID, removeView: true)
         disconnectingProfileIDs.remove(profileID)
         currentDirectoryByProfileID.removeValue(forKey: profileID)
+        inputBufferByProfileID.removeValue(forKey: profileID)
         setStatus(.disconnected, for: profileID)
         if updateLegacySelection {
             refreshLegacySelectionAfterProfileRemoval(profileID)
@@ -174,8 +182,8 @@ final class TerminalManager: ObservableObject {
     }
 
     func requestCurrentDirectory(profileID: UUID) {
-        let command = " printf '\\033]7;file://%s%s\\007' \"${HOSTNAME:-remote}\" \"$PWD\"\r"
-        sendText(command, profileID: profileID)
+        // Current directory is tracked from OSC 7 shell reports and typed `cd` commands.
+        // Avoid injecting a visible `printf ...` probe into the user's interactive shell.
     }
 
     func view(for profileID: UUID) -> RemotePTYTerminalView? {
@@ -203,6 +211,7 @@ final class TerminalManager: ObservableObject {
 
         cleanupSession(profileID: profileID, removeView: true)
         currentDirectoryByProfileID.removeValue(forKey: profileID)
+        inputBufferByProfileID.removeValue(forKey: profileID)
 
         if disconnectingProfileIDs.contains(profileID) {
             setStatus(.disconnected, for: profileID)
@@ -272,6 +281,139 @@ final class TerminalManager: ObservableObject {
         }
 
         return directory
+    }
+
+    private func recordInput(_ input: ArraySlice<UInt8>, for profileID: UUID) {
+        var buffer = inputBufferByProfileID[profileID] ?? []
+
+        for byte in input {
+            switch byte {
+            case 3, 21:
+                buffer.removeAll()
+            case 8, 127:
+                if !buffer.isEmpty {
+                    buffer.removeLast()
+                }
+            case 10, 13:
+                if let command = String(bytes: buffer, encoding: .utf8),
+                   let directory = directoryAfterChangingDirectory(command: command, profileID: profileID) {
+                    currentDirectoryByProfileID[profileID] = directory
+                }
+                buffer.removeAll()
+            case 0..<32:
+                continue
+            default:
+                buffer.append(byte)
+            }
+        }
+
+        inputBufferByProfileID[profileID] = buffer
+    }
+
+    private func directoryAfterChangingDirectory(command: String, profileID: UUID) -> String? {
+        let trimmed = command.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        let words = Self.shellWords(trimmed)
+        guard words.first == "cd" else { return nil }
+
+        let target = words.dropFirst().first ?? "~"
+        guard target != "-" else { return nil }
+        return Self.resolvedRemoteDirectory(target, base: currentDirectoryByProfileID[profileID])
+    }
+
+    private static func shellWords(_ command: String) -> [String] {
+        var words: [String] = []
+        var current = ""
+        var quote: Character?
+        var isEscaped = false
+
+        for character in command {
+            if isEscaped {
+                current.append(character)
+                isEscaped = false
+                continue
+            }
+
+            if character == "\\" {
+                isEscaped = true
+                continue
+            }
+
+            if let activeQuote = quote {
+                if character == activeQuote {
+                    quote = nil
+                } else {
+                    current.append(character)
+                }
+                continue
+            }
+
+            if character == "'" || character == "\"" {
+                quote = character
+                continue
+            }
+
+            if character == " " || character == "\t" {
+                if !current.isEmpty {
+                    words.append(current)
+                    current = ""
+                }
+                continue
+            }
+
+            current.append(character)
+        }
+
+        if !current.isEmpty {
+            words.append(current)
+        }
+        return words
+    }
+
+    private static func resolvedRemoteDirectory(_ path: String, base: String?) -> String {
+        let trimmed = path.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return "~" }
+        if trimmed == "~" || trimmed.hasPrefix("~/") || trimmed.hasPrefix("/") {
+            return normalizedPOSIXPath(trimmed)
+        }
+
+        guard let base, !base.isEmpty else {
+            return trimmed
+        }
+
+        if base == "~" {
+            return normalizedPOSIXPath("~/\(trimmed)")
+        }
+        return normalizedPOSIXPath("\(base)/\(trimmed)")
+    }
+
+    private static func normalizedPOSIXPath(_ path: String) -> String {
+        let hasRoot = path.hasPrefix("/")
+        let hasHome = path == "~" || path.hasPrefix("~/")
+        let prefix = hasRoot ? "/" : (hasHome ? "~" : "")
+        let trimmed = hasRoot ? String(path.dropFirst()) : (hasHome ? String(path.dropFirst(2)) : path)
+        var components: [String] = []
+
+        for component in trimmed.split(separator: "/", omittingEmptySubsequences: true) {
+            switch component {
+            case ".":
+                continue
+            case "..":
+                if !components.isEmpty {
+                    components.removeLast()
+                }
+            default:
+                components.append(String(component))
+            }
+        }
+
+        if prefix == "/" {
+            return "/" + components.joined(separator: "/")
+        }
+        if prefix == "~" {
+            return components.isEmpty ? "~" : "~/" + components.joined(separator: "/")
+        }
+        return components.isEmpty ? "." : components.joined(separator: "/")
     }
 
     private func launchConfiguration(for profile: SSHProfile) throws -> RemoteTerminalLaunchConfiguration {
@@ -397,6 +539,8 @@ private struct RemoteTerminalLaunchConfiguration {
 }
 
 final class RemotePTYTerminalView: LocalProcessTerminalView {
+    var onInput: ((ArraySlice<UInt8>) -> Void)?
+
     func configureAppearance() {
         wantsLayer = true
         autoresizingMask = [.width, .height]
@@ -424,6 +568,11 @@ final class RemotePTYTerminalView: LocalProcessTerminalView {
     func sendBytes(_ bytes: [UInt8]) {
         guard !bytes.isEmpty else { return }
         send(source: self, data: bytes[...])
+    }
+
+    override func send(source: TerminalView, data: ArraySlice<UInt8>) {
+        onInput?(data)
+        super.send(source: source, data: data)
     }
 
     func clearDisplay() {

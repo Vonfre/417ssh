@@ -202,6 +202,9 @@ jobs:
           417ssh $VERSION portable packages.
 
           Highlights:
+          - Terminal SFTP path-to-terminal now inserts \`cd <path>\`, so pressing Enter in the terminal enters that directory directly.
+          - Sync-to-terminal-folder and auto-sync no longer inject a visible \`printf ...\` probe into the shell.
+          - Auto-sync follows terminal \`cd ...\` commands and OSC 7 current-directory reports, then refreshes the SFTP side panel.
           - Workspace switching now keeps terminal sessions and SFTP browser state alive instead of tearing down the file panes when you leave the page.
           - Terminal workspaces add three SFTP side-panel actions: copy the current SFTP path into the terminal, sync the SFTP pane to the terminal folder, and auto-sync with terminal folder changes.
           - Terminal SFTP side panels keep per-profile path, listing, filter, cached directory, and connection state so another workspace does not overwrite the active file browser.
