@@ -54,13 +54,15 @@ final class ProfileStore: ObservableObject {
         )
     }
 
-    func addProfile(kind: WorkspaceKind = .jupyter) {
+    @discardableResult
+    func addProfile(kind: WorkspaceKind = .jupyter) -> SSHProfile {
         let kindCount = profiles.filter { $0.workspaceKind == kind }.count
         var profile = SSHProfile.blank(number: kindCount + 1, kind: kind)
         profile.name = nextProfileName(base: profile.name)
         profiles.append(profile)
         selectedProfileID = profile.id
         save()
+        return profile
     }
 
     func duplicateSelectedProfile() {
@@ -74,13 +76,30 @@ final class ProfileStore: ObservableObject {
 
     func deleteSelectedProfile() {
         guard let selectedProfileID else { return }
-        profiles.removeAll { $0.id == selectedProfileID }
+        deleteProfile(id: selectedProfileID)
+    }
+
+    func deleteProfile(id profileID: SSHProfile.ID, fallbackSelectionID: SSHProfile.ID? = nil) {
+        profiles.removeAll { $0.id == profileID }
 
         if profiles.isEmpty {
             profiles = [.sample]
         }
 
-        self.selectedProfileID = profiles.first?.id
+        if
+            let fallbackSelectionID,
+            profiles.contains(where: { $0.id == fallbackSelectionID })
+        {
+            selectedProfileID = fallbackSelectionID
+        } else if
+            let selectedProfileID,
+            profiles.contains(where: { $0.id == selectedProfileID })
+        {
+            self.selectedProfileID = selectedProfileID
+        } else {
+            selectedProfileID = profiles.first?.id
+        }
+
         save()
     }
 

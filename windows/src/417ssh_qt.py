@@ -76,7 +76,7 @@ def app_version() -> str:
         text = version_file.read_text(encoding="utf-8").strip()
         if text:
             return text
-    return "0.3.4"
+    return "0.3.5"
 
 
 CURRENT_VERSION = app_version()
@@ -167,6 +167,52 @@ def apply_short_flags(token: str, values: dict) -> None:
             values["allowRemoteLocalPortAccess"] = True
 
 
+def option_consumes_next_token(token: str) -> bool:
+    return token in {"-B", "-b", "-c", "-D", "-E", "-e", "-I", "-m", "-O", "-Q", "-R", "-S", "-W", "-w"}
+
+
+def truthy_ssh_option(value: str) -> bool:
+    return value.strip().lower() in {"yes", "true", "1", "on"}
+
+
+def normalized_forward_option(value: str) -> str:
+    parts = value.split()
+    if len(parts) == 2:
+        return f"{parts[0]}:{parts[1]}"
+    return value
+
+
+def apply_ssh_option(value: str, values: dict) -> None:
+    text = value.strip()
+    if not text:
+        return
+    if "=" in text:
+        key, option_value = text.split("=", 1)
+    else:
+        parts = text.split(None, 1)
+        if len(parts) != 2:
+            return
+        key, option_value = parts
+
+    key = key.strip().lower()
+    option_value = option_value.strip()
+    if key == "proxyjump":
+        jump_user, jump_host, jump_port = endpoint_parts(option_value, 22)
+        values["jumpUser"] = jump_user
+        values["jumpHost"] = jump_host
+        values["jumpPort"] = jump_port or 22
+    elif key == "user":
+        values["targetUser"] = option_value
+    elif key == "port":
+        values["targetPort"] = int(option_value)
+    elif key == "identityfile":
+        values["identityFile"] = option_value
+    elif key == "localforward":
+        values["localPort"], values["remoteHost"], values["remotePort"] = parse_forward_spec(normalized_forward_option(option_value))
+    elif key == "compression":
+        values["compressionEnabled"] = truthy_ssh_option(option_value)
+
+
 def profile_from_ssh_command(profile: SSHProfile, command: str, name: str = "", password: str = "") -> SSHProfile:
     try:
         tokens = shlex.split(command.strip())
@@ -219,13 +265,25 @@ def profile_from_ssh_command(profile: SSHProfile, command: str, name: str = "", 
             values["targetPort"] = int(tokens[index])
         elif token.startswith("-p") and len(token) > 2:
             values["targetPort"] = int(token[2:])
+        elif token == "-l":
+            index += 1
+            if index < len(tokens):
+                values["targetUser"] = tokens[index]
+        elif token.startswith("-l") and len(token) > 2:
+            values["targetUser"] = token[2:]
         elif token == "-i":
             index += 1
             if index < len(tokens):
                 values["identityFile"] = tokens[index]
         elif token.startswith("-i") and len(token) > 2:
             values["identityFile"] = token[2:]
-        elif token in {"-F", "-o"}:
+        elif token == "-o":
+            index += 1
+            if index < len(tokens):
+                apply_ssh_option(tokens[index], values)
+        elif token.startswith("-o") and len(token) > 2:
+            apply_ssh_option(token[2:], values)
+        elif token == "-F" or option_consumes_next_token(token):
             index += 1
         elif token.startswith("-") and not token.startswith("--"):
             apply_short_flags(token, values)
@@ -236,7 +294,7 @@ def profile_from_ssh_command(profile: SSHProfile, command: str, name: str = "", 
     target_user, target_host, target_port = endpoint_parts(target, values.get("targetPort") or 22)
     if not target_host:
         raise ValueError("没有识别到目标主机，例如 user@target-host。")
-    values["targetUser"] = target_user
+    values["targetUser"] = target_user or values.get("targetUser", "")
     values["targetHost"] = target_host
     values["targetPort"] = target_port or 22
     if name.strip():
@@ -616,6 +674,8 @@ class ProfileEditor(QDialog):
         super().__init__(parent)
         self.profile = SSHProfile.from_dict(profile.to_dict())
         self.fields: dict[str, QWidget] = {}
+        self.web_only_widgets: list[QWidget] = []
+        self.import_status: QLabel | None = None
         self.setWindowTitle("修改配置")
         self.resize(640, 720)
         self.setMinimumSize(560, 620)
@@ -639,7 +699,11 @@ class ProfileEditor(QDialog):
         title_box.addWidget(title)
         title_box.addWidget(subtitle)
         header_layout.addLayout(title_box, 1)
+        cancel = QPushButton("取消")
+        cancel.clicked.connect(self.reject)
+        header_layout.addWidget(cancel)
         done = QPushButton("完成")
+        done.setProperty("primary", True)
         done.clicked.connect(self.save)
         header_layout.addWidget(done)
         root.addWidget(header)
@@ -654,19 +718,17 @@ class ProfileEditor(QDialog):
         root.addWidget(scroll, 1)
 
         self.add_section("基本配置")
-        self.add_combo("workspaceKind", "工作区", [("Jupyter", "jupyter"), ("RStudio", "rstudio"), ("终端", "terminal"), ("SFTP", "sftp")])
+        workspace_combo = self.add_combo("workspaceKind", "工作区", [("Jupyter", "jupyter"), ("RStudio", "rstudio"), ("终端", "terminal"), ("SFTP", "sftp")])
         self.add_line("name", "名称")
         self.add_line("sshPassword", "SSH 密码", password=True)
-        import_button = QPushButton("识别 SSH 命令")
-        import_button.clicked.connect(self.import_ssh_command)
-        self.form.addWidget(import_button)
-        self.add_line("jupyterPath", "页面路径")
+        self.add_ssh_import_box()
+        self.web_only_widgets.append(self.add_line("jupyterPath", "页面路径"))
 
-        self.add_section("网页本地转发")
-        self.add_spin("localPort", "本地端口", 1, 65535)
-        self.add_line("remoteHost", "远程主机")
-        self.add_spin("remotePort", "远程端口", 1, 65535)
-        self.add_check("allowRemoteLocalPortAccess", "启用 -g")
+        self.web_only_widgets.append(self.add_section("网页本地转发"))
+        self.web_only_widgets.append(self.add_spin("localPort", "本地端口", 1, 65535))
+        self.web_only_widgets.append(self.add_line("remoteHost", "远程主机"))
+        self.web_only_widgets.append(self.add_spin("remotePort", "远程端口", 1, 65535))
+        self.web_only_widgets.append(self.add_check("allowRemoteLocalPortAccess", "启用 -g"))
 
         self.add_section("跳板机")
         self.add_line("jumpUser", "用户名")
@@ -695,11 +757,15 @@ class ProfileEditor(QDialog):
         self.preview.setStyleSheet("font-family: Consolas, monospace; color: #6b7280;")
         self.form.addWidget(self.preview)
         self.form.addStretch(1)
+        workspace_combo.currentIndexChanged.connect(self.update_field_visibility)
+        self.connect_form_updates()
+        self.update_field_visibility()
 
-    def add_section(self, title: str) -> None:
+    def add_section(self, title: str) -> QLabel:
         label = QLabel(title)
         label.setStyleSheet("font-size: 14px; font-weight: 700; margin-top: 6px;")
         self.form.addWidget(label)
+        return label
 
     def row(self, label_text: str) -> tuple[QWidget, QHBoxLayout]:
         row = QWidget()
@@ -712,16 +778,17 @@ class ProfileEditor(QDialog):
         self.form.addWidget(row)
         return row, layout
 
-    def add_line(self, name: str, label: str, password: bool = False) -> None:
-        _, layout = self.row(label)
+    def add_line(self, name: str, label: str, password: bool = False) -> QWidget:
+        row, layout = self.row(label)
         field = QLineEdit(str(getattr(self.profile, name)))
         if password:
             field.setEchoMode(QLineEdit.Password)
         layout.addWidget(field, 1)
         self.fields[name] = field
+        return row
 
-    def add_spin(self, name: str, label: str, low: int, high: int) -> None:
-        _, layout = self.row(label)
+    def add_spin(self, name: str, label: str, low: int, high: int) -> QWidget:
+        row, layout = self.row(label)
         field = QSpinBox()
         field.setRange(low, high)
         field.setValue(int(getattr(self.profile, name)))
@@ -729,14 +796,16 @@ class ProfileEditor(QDialog):
         layout.addWidget(field)
         layout.addStretch(1)
         self.fields[name] = field
+        return row
 
-    def add_check(self, name: str, label: str) -> None:
+    def add_check(self, name: str, label: str) -> QCheckBox:
         checkbox = QCheckBox(label)
         checkbox.setChecked(bool(getattr(self.profile, name)))
         self.form.addWidget(checkbox)
         self.fields[name] = checkbox
+        return checkbox
 
-    def add_combo(self, name: str, label: str, choices: list[tuple[str, str]]) -> None:
+    def add_combo(self, name: str, label: str, choices: list[tuple[str, str]]) -> QComboBox:
         _, layout = self.row(label)
         combo = QComboBox()
         for text, value in choices:
@@ -747,6 +816,24 @@ class ProfileEditor(QDialog):
         layout.addWidget(combo)
         layout.addStretch(1)
         self.fields[name] = combo
+        return combo
+
+    def add_ssh_import_box(self) -> None:
+        self.add_section("快捷填写")
+        self.command_import = QTextEdit()
+        self.command_import.setPlaceholderText("ssh -CNgv -L 8000:remote-host:8888 -J user@jump.example.com:22 user@target-host")
+        self.command_import.setFixedHeight(92)
+        self.form.addWidget(self.command_import)
+
+        import_row = QHBoxLayout()
+        import_button = QPushButton("识别并填入")
+        import_button.clicked.connect(self.import_ssh_command)
+        import_row.addWidget(import_button)
+        self.import_status = QLabel("")
+        self.import_status.setWordWrap(True)
+        self.import_status.setStyleSheet("color: #6b7280;")
+        import_row.addWidget(self.import_status, 1)
+        self.form.addLayout(import_row)
 
     def current_form_profile(self) -> SSHProfile:
         values = self.profile.to_dict()
@@ -776,53 +863,49 @@ class ProfileEditor(QDialog):
                 widget.setCurrentIndex(max(0, index))
         if hasattr(self, "preview"):
             self.preview.setPlainText(profile.preview_command())
+        self.update_field_visibility()
+
+    def connect_form_updates(self) -> None:
+        for widget in self.fields.values():
+            if isinstance(widget, QLineEdit):
+                widget.textChanged.connect(self.update_preview_from_fields)
+            elif isinstance(widget, QSpinBox):
+                widget.valueChanged.connect(self.update_preview_from_fields)
+            elif isinstance(widget, QCheckBox):
+                widget.toggled.connect(self.update_preview_from_fields)
+            elif isinstance(widget, QComboBox):
+                widget.currentIndexChanged.connect(self.update_preview_from_fields)
+
+    def update_field_visibility(self, *_args) -> None:
+        workspace = self.fields.get("workspaceKind")
+        kind = workspace.currentData() if isinstance(workspace, QComboBox) else self.profile.workspaceKind
+        is_web = kind in {"jupyter", "rstudio"}
+        for widget in self.web_only_widgets:
+            widget.setVisible(is_web)
+        self.update_preview_from_fields()
+
+    def update_preview_from_fields(self, *_args) -> None:
+        if not hasattr(self, "preview"):
+            return
+        try:
+            self.preview.setPlainText(self.current_form_profile().preview_command())
+        except Exception:
+            pass
 
     def import_ssh_command(self) -> None:
-        dialog = QDialog(self)
-        dialog.setWindowTitle("识别 SSH 命令")
-        dialog.resize(620, 360)
-        layout = QVBoxLayout(dialog)
-        info = QLabel("先选择工作区类型，再粘贴 ssh 命令。名称和密码会写入当前配置。")
-        info.setWordWrap(True)
-        info.setStyleSheet("color: #6b7280;")
-        layout.addWidget(info)
-
-        command_input = QTextEdit()
-        command_input.setPlaceholderText("ssh -CNgv -L 8000:remote-host:8888 -J user@jump.example.com:22 user@target-host")
-        command_input.setFixedHeight(110)
-        layout.addWidget(command_input)
-
-        name_input = QLineEdit(self.fields["name"].text() if isinstance(self.fields.get("name"), QLineEdit) else self.profile.name)
-        name_input.setPlaceholderText("连接名称")
-        layout.addWidget(name_input)
-
-        password_input = QLineEdit()
-        password_input.setEchoMode(QLineEdit.Password)
-        password_input.setPlaceholderText("SSH 密码，可留空")
-        layout.addWidget(password_input)
-
-        buttons = QHBoxLayout()
-        buttons.addStretch(1)
-        cancel = QPushButton("取消")
-        cancel.clicked.connect(dialog.reject)
-        buttons.addWidget(cancel)
-        ok = QPushButton("识别并填入")
-        ok.clicked.connect(dialog.accept)
-        buttons.addWidget(ok)
-        layout.addLayout(buttons)
-
-        if dialog.exec() != QDialog.Accepted:
-            return
         try:
             imported = profile_from_ssh_command(
                 self.current_form_profile(),
-                command_input.toPlainText(),
-                name_input.text(),
-                password_input.text(),
+                self.command_import.toPlainText(),
             )
             self.apply_profile_to_fields(imported)
+            if self.import_status is not None:
+                self.import_status.setText("已识别并填入当前配置。")
+                self.import_status.setStyleSheet("color: #6b7280;")
         except Exception as exc:
-            QMessageBox.warning(self, APP_NAME, f"无法识别 SSH 命令：{exc}")
+            if self.import_status is not None:
+                self.import_status.setText(f"无法识别：{exc}")
+                self.import_status.setStyleSheet("color: #c23535;")
 
     def save(self) -> None:
         self.saved.emit(self.current_form_profile())
@@ -1600,18 +1683,26 @@ class MainWindow(QMainWindow):
 
         bottom = QHBoxLayout()
         bottom.setSpacing(6)
-        for text, callback in (
-            ("Jupyter", lambda: self.add_profile("jupyter")),
-            ("RStudio", lambda: self.add_profile("rstudio")),
-            ("终端", lambda: self.add_profile("terminal")),
-            ("SFTP", lambda: self.add_profile("sftp")),
-            ("复制", self.duplicate_profile),
-            ("删除", self.delete_profile),
-            ("设置", self.open_settings),
+        add_button = QPushButton("增加")
+        add_menu = QMenu(add_button)
+        for text, kind in (
+            ("Jupyter 工作区", "jupyter"),
+            ("RStudio 工作区", "rstudio"),
+            ("终端工作区", "terminal"),
+            ("SFTP 工作区", "sftp"),
         ):
-            button = QPushButton(text)
-            button.clicked.connect(callback)
-            bottom.addWidget(button)
+            action = add_menu.addAction(text)
+            action.triggered.connect(lambda _checked=False, selected_kind=kind: self.add_profile(selected_kind))
+        add_button.setMenu(add_menu)
+        bottom.addWidget(add_button, 1)
+
+        delete_button = QPushButton("删除")
+        delete_button.clicked.connect(self.delete_profile)
+        bottom.addWidget(delete_button, 1)
+
+        settings_button = QPushButton("设置")
+        settings_button.clicked.connect(self.open_settings)
+        bottom.addWidget(settings_button, 1)
         sidebar_layout.addLayout(bottom)
         splitter.addWidget(self.sidebar)
 
@@ -1653,11 +1744,6 @@ class MainWindow(QMainWindow):
         label = QLabel(f"{title}  {len(profiles)}")
         label.setStyleSheet("color: #69736f; font-size: 12px; font-weight: 700;")
         header.addWidget(label, 1)
-        add = QToolButton()
-        add.setText("+")
-        add.setToolTip("新增配置")
-        add.clicked.connect(lambda: self.add_profile(kind))
-        header.addWidget(add)
         layout.addLayout(header)
 
         if not profiles:
@@ -2939,15 +3025,23 @@ cp -a -- "$src" "$target_dir/"
             self.settings_dialog.set_update_state(self.update_status, self.latest_release, self.update_asset)
 
     def add_profile(self, kind: str) -> None:
+        previous_profile_id = self.store.selected_profile_id
         profile = self.store.add(kind)
         self.refresh_sidebar()
-        self.edit_profile(profile)
+        if not self.edit_profile(profile):
+            self.store.delete_by_id(profile.id, previous_profile_id)
+            self.refresh_sidebar()
+            self.render_selected_profile()
 
     def duplicate_profile(self) -> None:
+        previous_profile_id = self.store.selected_profile_id
         profile = self.store.duplicate_selected()
         self.refresh_sidebar()
         if profile is not None:
-            self.edit_profile(profile)
+            if not self.edit_profile(profile):
+                self.store.delete_by_id(profile.id, previous_profile_id)
+                self.refresh_sidebar()
+                self.render_selected_profile()
 
     def delete_profile(self) -> None:
         if QMessageBox.question(self, APP_NAME, "确定删除当前配置吗？") == QMessageBox.Yes:
@@ -2961,10 +3055,10 @@ cp -a -- "$src" "$target_dir/"
             self.store.selected_profile_id = profile.id
             self.edit_profile(profile)
 
-    def edit_profile(self, profile: SSHProfile) -> None:
+    def edit_profile(self, profile: SSHProfile) -> bool:
         dialog = ProfileEditor(profile, self)
         dialog.saved.connect(self.save_profile)
-        dialog.exec()
+        return dialog.exec() == QDialog.Accepted
 
     def save_profile(self, profile: SSHProfile) -> None:
         self.close_sftp_connection()

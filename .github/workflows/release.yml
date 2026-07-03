@@ -202,7 +202,9 @@ jobs:
           417ssh $VERSION portable packages.
 
           Highlights:
-          - Profile editor can import existing `ssh ...` commands and fill host, jump host, forwarding, flags, and identity file fields.
+          - Profile editor imports existing `ssh ...` commands inline, without a separate popup, and fills host, jump host, forwarding, flags, and identity file fields.
+          - Sidebar actions are simplified to Add, Delete, and Settings; Add opens a workspace-type menu.
+          - New profiles can be canceled directly; canceling removes the temporary blank profile instead of leaving it behind.
           - Blank SFTP workspaces no longer auto-select another saved server; empty profiles stay local until configured.
           - New pure SFTP workspace supports 1-4 panes, including same-server multi-pane and multi-server layouts.
           - Drag and drop now supports local uploads and remote item transfer between SFTP panes, including the terminal SFTP side panel.

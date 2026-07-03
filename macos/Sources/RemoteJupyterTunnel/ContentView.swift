@@ -11,6 +11,8 @@ struct ContentView: View {
 
     @State private var reloadToken = 0
     @State private var editingProfileID: UUID?
+    @State private var pendingNewProfileID: UUID?
+    @State private var selectionBeforeNewProfile: UUID?
     @State private var isShowingSettings = false
 
     var body: some View {
@@ -25,21 +27,21 @@ struct ContentView: View {
                         profileBox: store.binding(for: profile),
                         reloadToken: $reloadToken,
                         onEdit: {
-                            editingProfileID = profile.id
+                            beginEditingProfile(profile.id)
                         }
                     )
                 case .terminal:
                     TerminalWorkspaceView(
                         profileBox: store.binding(for: profile),
                         onEdit: {
-                            editingProfileID = profile.id
+                            beginEditingProfile(profile.id)
                         }
                     )
                 case .sftp:
                     SFTPWorkspaceView(
                         profileBox: store.binding(for: profile),
                         onEdit: {
-                            editingProfileID = profile.id
+                            beginEditingProfile(profile.id)
                         }
                     )
                 }
@@ -57,10 +59,10 @@ struct ContentView: View {
                 let profile = store.profiles.first(where: { $0.id == editingProfileID })
             {
                 ProfileEditorView(
-                    profileBox: store.binding(for: profile),
-                    onDone: {
-                        self.editingProfileID = nil
-                    }
+                    profile: profile,
+                    isNewProfile: pendingNewProfileID == profile.id,
+                    onSave: saveEditingProfile,
+                    onCancel: cancelEditingProfile
                 )
                 .frame(minWidth: 560, idealWidth: 620, minHeight: 620, idealHeight: 720)
             } else {
@@ -83,7 +85,7 @@ struct ContentView: View {
             get: { editingProfileID != nil },
             set: { isPresented in
                 if !isPresented {
-                    editingProfileID = nil
+                    cancelEditingProfile()
                 }
             }
         )
@@ -118,48 +120,28 @@ struct ContentView: View {
                 LazyVStack(spacing: 14) {
                     ProfileSectionView(
                         title: WorkspaceKind.jupyter.sidebarTitle,
-                        count: store.profiles(for: .jupyter).count,
-                        addHelp: "新增 Jupyter 工作区",
-                        onAdd: {
-                            store.addProfile(kind: .jupyter)
-                            editingProfileID = store.selectedProfileID
-                        }
+                        count: store.profiles(for: .jupyter).count
                     ) {
                         profileRows(for: .jupyter)
                     }
 
                     ProfileSectionView(
                         title: WorkspaceKind.rstudio.sidebarTitle,
-                        count: store.profiles(for: .rstudio).count,
-                        addHelp: "新增 RStudio 工作区",
-                        onAdd: {
-                            store.addProfile(kind: .rstudio)
-                            editingProfileID = store.selectedProfileID
-                        }
+                        count: store.profiles(for: .rstudio).count
                     ) {
                         profileRows(for: .rstudio)
                     }
 
                     ProfileSectionView(
                         title: WorkspaceKind.terminal.sidebarTitle,
-                        count: store.profiles(for: .terminal).count,
-                        addHelp: "新增终端工作区",
-                        onAdd: {
-                            store.addProfile(kind: .terminal)
-                            editingProfileID = store.selectedProfileID
-                        }
+                        count: store.profiles(for: .terminal).count
                     ) {
                         profileRows(for: .terminal)
                     }
 
                     ProfileSectionView(
                         title: WorkspaceKind.sftp.sidebarTitle,
-                        count: store.profiles(for: .sftp).count,
-                        addHelp: "新增 SFTP 工作区",
-                        onAdd: {
-                            store.addProfile(kind: .sftp)
-                            editingProfileID = store.selectedProfileID
-                        }
+                        count: store.profiles(for: .sftp).count
                     ) {
                         profileRows(for: .sftp)
                     }
@@ -172,45 +154,35 @@ struct ContentView: View {
                 .opacity(0.45)
 
             HStack(spacing: 8) {
-                Button {
-                    store.addProfile(kind: .jupyter)
-                    editingProfileID = store.selectedProfileID
-                } label: {
-                    Label("Jupyter", systemImage: "plus.rectangle.on.rectangle")
-                }
-                .help("新增 Jupyter 工作区")
+                Menu {
+                    Button {
+                        beginNewProfile(.jupyter)
+                    } label: {
+                        Label("Jupyter 工作区", systemImage: WorkspaceKind.jupyter.systemImage)
+                    }
 
-                Button {
-                    store.addProfile(kind: .rstudio)
-                    editingProfileID = store.selectedProfileID
-                } label: {
-                    Label("RStudio", systemImage: "plus.square")
-                }
-                .help("新增 RStudio 工作区")
+                    Button {
+                        beginNewProfile(.rstudio)
+                    } label: {
+                        Label("RStudio 工作区", systemImage: WorkspaceKind.rstudio.systemImage)
+                    }
 
-                Button {
-                    store.addProfile(kind: .terminal)
-                    editingProfileID = store.selectedProfileID
-                } label: {
-                    Label("终端", systemImage: "plus.viewfinder")
-                }
-                .help("新增终端工作区")
+                    Button {
+                        beginNewProfile(.terminal)
+                    } label: {
+                        Label("终端工作区", systemImage: WorkspaceKind.terminal.systemImage)
+                    }
 
-                Button {
-                    store.addProfile(kind: .sftp)
-                    editingProfileID = store.selectedProfileID
+                    Button {
+                        beginNewProfile(.sftp)
+                    } label: {
+                        Label("SFTP 工作区", systemImage: WorkspaceKind.sftp.systemImage)
+                    }
                 } label: {
-                    Label("SFTP", systemImage: "plus.rectangle.portrait")
+                    Label("增加", systemImage: "plus")
                 }
-                .help("新增 SFTP 工作区")
-
-                Button {
-                    store.duplicateSelectedProfile()
-                    editingProfileID = store.selectedProfileID
-                } label: {
-                    Label("复制", systemImage: "plus.square.on.square")
-                }
-                .help("复制当前配置")
+                .frame(maxWidth: .infinity)
+                .help("新增配置")
 
                 Button(role: .destructive) {
                     store.deleteSelectedProfile()
@@ -218,6 +190,7 @@ struct ContentView: View {
                     Label("删除", systemImage: "trash")
                 }
                 .disabled(store.profiles.isEmpty)
+                .frame(maxWidth: .infinity)
                 .help("删除当前配置")
 
                 Button {
@@ -225,9 +198,9 @@ struct ContentView: View {
                 } label: {
                     Label("设置", systemImage: "gearshape")
                 }
+                .frame(maxWidth: .infinity)
                 .help("打开设置")
             }
-            .labelStyle(.iconOnly)
             .buttonStyle(.bordered)
             .controlSize(.small)
             .padding(.horizontal, 10)
@@ -270,11 +243,41 @@ struct ContentView: View {
                     },
                     onEdit: {
                         store.selectedProfileID = profile.id
-                        editingProfileID = profile.id
+                        beginEditingProfile(profile.id)
                     }
                 )
             }
         }
+    }
+
+    private func beginNewProfile(_ kind: WorkspaceKind) {
+        selectionBeforeNewProfile = store.selectedProfileID
+        let profile = store.addProfile(kind: kind)
+        pendingNewProfileID = profile.id
+        editingProfileID = profile.id
+    }
+
+    private func beginEditingProfile(_ profileID: UUID) {
+        pendingNewProfileID = nil
+        selectionBeforeNewProfile = nil
+        editingProfileID = profileID
+    }
+
+    private func saveEditingProfile(_ profile: SSHProfile) {
+        store.updateProfile(profile)
+        store.selectedProfileID = profile.id
+        editingProfileID = nil
+        pendingNewProfileID = nil
+        selectionBeforeNewProfile = nil
+    }
+
+    private func cancelEditingProfile() {
+        if let pendingNewProfileID {
+            store.deleteProfile(id: pendingNewProfileID, fallbackSelectionID: selectionBeforeNewProfile)
+        }
+        editingProfileID = nil
+        pendingNewProfileID = nil
+        selectionBeforeNewProfile = nil
     }
 
     private func isProfileActive(_ profile: SSHProfile) -> Bool {
@@ -329,21 +332,15 @@ enum AppTheme {
 private struct ProfileSectionView<Content: View>: View {
     let title: String
     let count: Int
-    let addHelp: String
-    let onAdd: () -> Void
     @ViewBuilder var content: Content
 
     init(
         title: String,
         count: Int,
-        addHelp: String,
-        onAdd: @escaping () -> Void,
         @ViewBuilder content: () -> Content
     ) {
         self.title = title
         self.count = count
-        self.addHelp = addHelp
-        self.onAdd = onAdd
         self.content = content()
     }
 
@@ -363,14 +360,6 @@ private struct ProfileSectionView<Content: View>: View {
                     .background(Color(nsColor: .textBackgroundColor).opacity(0.72), in: Capsule())
 
                 Spacer()
-
-                Button(action: onAdd) {
-                    Image(systemName: "plus")
-                        .frame(width: 22, height: 22)
-                }
-                .buttonStyle(.plain)
-                .foregroundStyle(.secondary)
-                .help(addHelp)
             }
             .padding(.horizontal, 4)
 
@@ -805,18 +794,29 @@ private struct WebWorkspaceView: View {
 }
 
 private struct ProfileEditorView: View {
-    let profileBox: BindingBox<SSHProfile>
-    let onDone: () -> Void
+    let isNewProfile: Bool
+    let onSave: (SSHProfile) -> Void
+    let onCancel: () -> Void
 
-    private var profile: Binding<SSHProfile> {
-        Binding(
-            get: { profileBox.get() },
-            set: { profileBox.set($0) }
-        )
-    }
+    @State private var draftProfile: SSHProfile
+    @State private var sshCommandText = ""
+    @State private var importMessage: String?
+    @State private var importMessageIsError = false
 
     private var currentProfile: SSHProfile {
-        profileBox.get()
+        draftProfile
+    }
+
+    init(
+        profile: SSHProfile,
+        isNewProfile: Bool,
+        onSave: @escaping (SSHProfile) -> Void,
+        onCancel: @escaping () -> Void
+    ) {
+        self.isNewProfile = isNewProfile
+        self.onSave = onSave
+        self.onCancel = onCancel
+        _draftProfile = State(initialValue: profile)
     }
 
     var body: some View {
@@ -825,7 +825,7 @@ private struct ProfileEditorView: View {
                 AppLogo(size: 40)
 
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("修改配置")
+                    Text(isNewProfile ? "新增配置" : "修改配置")
                         .font(.title3.weight(.semibold))
                     Text(currentProfile.name)
                         .font(.callout)
@@ -835,7 +835,11 @@ private struct ProfileEditorView: View {
 
                 Spacer()
 
-                Button("完成", action: onDone)
+                Button("取消", role: .cancel, action: onCancel)
+
+                Button("完成") {
+                    onSave(draftProfile)
+                }
                     .keyboardShortcut(.defaultAction)
             }
             .padding(14)
@@ -859,7 +863,7 @@ private struct ProfileEditorView: View {
         VStack(alignment: .leading, spacing: 14) {
             SettingsSection(title: "基本配置", systemImage: "person.crop.square") {
                 SettingRow("工作区") {
-                    Picker("工作区", selection: profile.workspaceKind) {
+                    Picker("工作区", selection: $draftProfile.workspaceKind) {
                         ForEach(WorkspaceKind.allCases) { kind in
                             Label(kind.title, systemImage: kind.systemImage)
                                 .tag(kind)
@@ -869,14 +873,46 @@ private struct ProfileEditorView: View {
                     .frame(maxWidth: 240)
                 }
 
-                labeledTextField("名称", text: profile.name)
-                labeledSecureField("SSH 密码", text: profile.sshPassword)
+                labeledTextField("名称", text: $draftProfile.name)
+                labeledSecureField("SSH 密码", text: $draftProfile.sshPassword)
 
                 SettingRow("快捷填写") {
-                    Button {
-                        importFromSSHCommand()
-                    } label: {
-                        Label("识别 SSH 命令", systemImage: "wand.and.stars")
+                    VStack(alignment: .leading, spacing: 8) {
+                        ZStack(alignment: .topLeading) {
+                            TextEditor(text: $sshCommandText)
+                                .font(.system(.caption, design: .monospaced))
+                                .frame(minHeight: 82)
+                                .padding(4)
+                                .overlay {
+                                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                                        .stroke(Color(nsColor: .separatorColor).opacity(0.7), lineWidth: 1)
+                                }
+
+                            if sshCommandText.isEmpty {
+                                Text("ssh -CNgv -L 8000:remote-host:8888 -J user@jump.example.com:22 user@target-host")
+                                    .font(.system(.caption, design: .monospaced))
+                                    .foregroundStyle(.tertiary)
+                                    .padding(.horizontal, 10)
+                                    .padding(.vertical, 12)
+                                    .allowsHitTesting(false)
+                            }
+                        }
+
+                        HStack(spacing: 8) {
+                            Button {
+                                importFromSSHCommand()
+                            } label: {
+                                Label("识别并填入", systemImage: "wand.and.stars")
+                            }
+
+                            if let importMessage {
+                                Text(importMessage)
+                                    .font(.caption)
+                                    .foregroundStyle(importMessageIsError ? Color.red : Color.secondary)
+                                    .lineLimit(2)
+                                    .fixedSize(horizontal: false, vertical: true)
+                            }
+                        }
                     }
                 }
 
@@ -889,39 +925,39 @@ private struct ProfileEditorView: View {
                             .textSelection(.enabled)
                     }
 
-                    labeledTextField("页面路径", text: profile.jupyterPath)
+                    labeledTextField("页面路径", text: $draftProfile.jupyterPath)
                 }
             }
 
             if currentProfile.workspaceKind.isWebWorkspace {
                 SettingsSection(title: "\(currentProfile.workspaceKind.title) 本地转发", systemImage: "arrow.left.arrow.right") {
-                    labeledIntField("本地端口", value: profile.localPort)
-                    labeledTextField("远程主机", text: profile.remoteHost)
-                    labeledIntField("远程端口", value: profile.remotePort)
-                    Toggle("启用 -g", isOn: profile.allowRemoteLocalPortAccess)
+                    labeledIntField("本地端口", value: $draftProfile.localPort)
+                    labeledTextField("远程主机", text: $draftProfile.remoteHost)
+                    labeledIntField("远程端口", value: $draftProfile.remotePort)
+                    Toggle("启用 -g", isOn: $draftProfile.allowRemoteLocalPortAccess)
                 }
             }
 
             SettingsSection(title: "跳板机", systemImage: "point.3.connected.trianglepath.dotted") {
-                labeledTextField("用户名", text: profile.jumpUser)
-                labeledTextField("主机", text: profile.jumpHost)
-                labeledIntField("端口", value: profile.jumpPort)
+                labeledTextField("用户名", text: $draftProfile.jumpUser)
+                labeledTextField("主机", text: $draftProfile.jumpHost)
+                labeledIntField("端口", value: $draftProfile.jumpPort)
             }
 
             SettingsSection(title: "目标主机", systemImage: "server.rack") {
-                labeledTextField("用户名", text: profile.targetUser)
-                labeledTextField("主机", text: profile.targetHost)
-                labeledIntField("SSH 端口", value: profile.targetPort)
-                labeledTextField("密钥文件", text: profile.identityFile, prompt: "~/.ssh/id_ed25519")
-                Toggle("启用压缩 (-C)", isOn: profile.compressionEnabled)
-                Toggle("详细日志 (-v)", isOn: profile.verboseLogging)
+                labeledTextField("用户名", text: $draftProfile.targetUser)
+                labeledTextField("主机", text: $draftProfile.targetHost)
+                labeledIntField("SSH 端口", value: $draftProfile.targetPort)
+                labeledTextField("密钥文件", text: $draftProfile.identityFile, prompt: "~/.ssh/id_ed25519")
+                Toggle("启用压缩 (-C)", isOn: $draftProfile.compressionEnabled)
+                Toggle("详细日志 (-v)", isOn: $draftProfile.verboseLogging)
             }
 
             SettingsSection(title: "连接稳定性", systemImage: "antenna.radiowaves.left.and.right") {
-                Toggle("保持长连接", isOn: profile.keepAliveEnabled)
-                labeledIntField("保活间隔", value: profile.keepAliveInterval)
-                labeledIntField("容错次数", value: profile.keepAliveCountMax)
-                Toggle("使用本机 ~/.ssh/config", isOn: profile.useSSHConfig)
+                Toggle("保持长连接", isOn: $draftProfile.keepAliveEnabled)
+                labeledIntField("保活间隔", value: $draftProfile.keepAliveInterval)
+                labeledIntField("容错次数", value: $draftProfile.keepAliveCountMax)
+                Toggle("使用本机 ~/.ssh/config", isOn: $draftProfile.useSSHConfig)
                 Text("默认每 30 秒发送一次 SSH 保活包；容错次数越高，短时间网络波动越不容易被判定为断开。")
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -963,98 +999,17 @@ private struct ProfileEditorView: View {
     }
 
     private func importFromSSHCommand() {
-        guard let input = promptSSHCommandImport(defaultName: currentProfile.name) else { return }
-
         do {
             var updatedProfile = currentProfile
-            try updatedProfile.applySSHCommand(input.command)
-
-            if !input.name.isEmpty {
-                updatedProfile.name = input.name
-            }
-
-            if !input.password.isEmpty {
-                updatedProfile.sshPassword = input.password
-            }
-
-            profileBox.set(updatedProfile)
+            try updatedProfile.applySSHCommand(sshCommandText)
+            draftProfile = updatedProfile
+            importMessage = "已识别并填入当前配置。"
+            importMessageIsError = false
         } catch {
-            showAlert(title: "无法识别 SSH 命令", message: error.localizedDescription)
+            importMessage = error.localizedDescription
+            importMessageIsError = true
         }
     }
-
-    private func promptSSHCommandImport(defaultName: String) -> SSHCommandImportInput? {
-        let alert = NSAlert()
-        alert.messageText = "识别 SSH 命令"
-        alert.informativeText = "先在“工作区”里选好 Jupyter、RStudio、终端或 SFTP，再粘贴 ssh 命令。名称和密码会写入当前配置。"
-        alert.alertStyle = .informational
-        alert.addButton(withTitle: "识别并填入")
-        alert.addButton(withTitle: "取消")
-
-        let stack = NSStackView()
-        stack.orientation = .vertical
-        stack.spacing = 8
-        stack.translatesAutoresizingMaskIntoConstraints = false
-
-        let commandView = NSTextView(frame: NSRect(x: 0, y: 0, width: 520, height: 86))
-        commandView.font = .monospacedSystemFont(ofSize: 12, weight: .regular)
-        commandView.string = ""
-
-        let scrollView = NSScrollView(frame: NSRect(x: 0, y: 0, width: 520, height: 92))
-        scrollView.borderType = .bezelBorder
-        scrollView.hasVerticalScroller = true
-        scrollView.documentView = commandView
-
-        let nameField = NSTextField(string: defaultName)
-        nameField.placeholderString = "连接名称"
-
-        let passwordField = NSSecureTextField(string: "")
-        passwordField.placeholderString = "SSH 密码，可留空"
-
-        stack.addArrangedSubview(label("SSH 命令"))
-        stack.addArrangedSubview(scrollView)
-        stack.addArrangedSubview(label("名称"))
-        stack.addArrangedSubview(nameField)
-        stack.addArrangedSubview(label("密码"))
-        stack.addArrangedSubview(passwordField)
-
-        NSLayoutConstraint.activate([
-            scrollView.widthAnchor.constraint(equalToConstant: 520),
-            scrollView.heightAnchor.constraint(equalToConstant: 92),
-            nameField.widthAnchor.constraint(equalToConstant: 520),
-            passwordField.widthAnchor.constraint(equalToConstant: 520)
-        ])
-
-        alert.accessoryView = stack
-        guard alert.runModal() == .alertFirstButtonReturn else { return nil }
-        return SSHCommandImportInput(
-            command: commandView.string.trimmingCharacters(in: .whitespacesAndNewlines),
-            name: nameField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines),
-            password: passwordField.stringValue
-        )
-    }
-
-    private func label(_ text: String) -> NSTextField {
-        let field = NSTextField(labelWithString: text)
-        field.font = .systemFont(ofSize: 12, weight: .semibold)
-        field.textColor = .secondaryLabelColor
-        return field
-    }
-
-    private func showAlert(title: String, message: String) {
-        let alert = NSAlert()
-        alert.messageText = title
-        alert.informativeText = message
-        alert.alertStyle = .warning
-        alert.addButton(withTitle: "知道了")
-        alert.runModal()
-    }
-}
-
-private struct SSHCommandImportInput {
-    let command: String
-    let name: String
-    let password: String
 }
 
 private struct ParsedSSHCommand {
@@ -1167,6 +1122,13 @@ private enum SSHCommandParser {
                 let value = String(token.dropFirst(2))
                 guard let port = Int(value) else { throw SSHCommandImportError.invalidPort(value) }
                 parsed.targetPort = port
+            } else if token == "-l" {
+                index += 1
+                if index < tokens.count {
+                    parsed.targetUser = tokens[index]
+                }
+            } else if token.hasPrefix("-l"), token.count > 2 {
+                parsed.targetUser = String(token.dropFirst(2))
             } else if token == "-i" {
                 index += 1
                 if index < tokens.count {
@@ -1174,7 +1136,14 @@ private enum SSHCommandParser {
                 }
             } else if token.hasPrefix("-i"), token.count > 2 {
                 parsed.identityFile = String(token.dropFirst(2))
-            } else if token == "-F" || token == "-o" {
+            } else if token == "-o" {
+                index += 1
+                if index < tokens.count {
+                    try applySSHOption(tokens[index], to: &parsed)
+                }
+            } else if token.hasPrefix("-o"), token.count > 2 {
+                try applySSHOption(String(token.dropFirst(2)), to: &parsed)
+            } else if token == "-F" || optionConsumesNextToken(token) {
                 index += 1
             } else if token.hasPrefix("-"), !token.hasPrefix("--") {
                 applyCombinedFlags(token, to: &parsed)
@@ -1202,6 +1171,60 @@ private enum SSHCommandParser {
                 continue
             }
         }
+    }
+
+    private static func optionConsumesNextToken(_ token: String) -> Bool {
+        [
+            "-B", "-b", "-c", "-D", "-E", "-e", "-I", "-m", "-O", "-Q", "-R", "-S", "-W", "-w"
+        ].contains(token)
+    }
+
+    private static func applySSHOption(_ value: String, to parsed: inout ParsedSSHCommand) throws {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+
+        let key: String
+        let optionValue: String
+        if let equalsIndex = trimmed.firstIndex(of: "=") {
+            key = String(trimmed[..<equalsIndex])
+            optionValue = String(trimmed[trimmed.index(after: equalsIndex)...])
+        } else if let spaceIndex = trimmed.firstIndex(where: { $0.isWhitespace }) {
+            key = String(trimmed[..<spaceIndex])
+            optionValue = String(trimmed[trimmed.index(after: spaceIndex)...])
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+        } else {
+            return
+        }
+
+        switch key.lowercased() {
+        case "proxyjump":
+            try applyJump(optionValue, to: &parsed)
+        case "user":
+            parsed.targetUser = optionValue
+        case "port":
+            guard let port = Int(optionValue) else { throw SSHCommandImportError.invalidPort(optionValue) }
+            parsed.targetPort = port
+        case "identityfile":
+            parsed.identityFile = optionValue
+        case "localforward":
+            try applyForward(normalizedForwardOption(optionValue), to: &parsed)
+        case "compression":
+            parsed.compressionEnabled = isTruthySSHOption(optionValue)
+        default:
+            return
+        }
+    }
+
+    private static func normalizedForwardOption(_ value: String) -> String {
+        let parts = value.split(whereSeparator: { $0.isWhitespace }).map(String.init)
+        if parts.count == 2 {
+            return "\(parts[0]):\(parts[1])"
+        }
+        return value
+    }
+
+    private static func isTruthySSHOption(_ value: String) -> Bool {
+        ["yes", "true", "1", "on"].contains(value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased())
     }
 
     private static func applyForward(_ value: String, to parsed: inout ParsedSSHCommand) throws {

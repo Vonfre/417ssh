@@ -347,11 +347,18 @@ class ProfileStore:
         return clone
 
     def delete_selected(self) -> None:
-        selected = self.selected_profile_id
-        self.profiles = [profile for profile in self.profiles if profile.id != selected]
+        self.delete_by_id(self.selected_profile_id)
+
+    def delete_by_id(self, profile_id: str | None, fallback_id: str | None = None) -> None:
+        self.profiles = [profile for profile in self.profiles if profile.id != profile_id]
         if not self.profiles:
             self.profiles = [SSHProfile.sample()]
-        self.selected_profile_id = self.profiles[0].id
+        if fallback_id and any(profile.id == fallback_id for profile in self.profiles):
+            self.selected_profile_id = fallback_id
+        elif self.selected_profile_id and any(profile.id == self.selected_profile_id for profile in self.profiles):
+            pass
+        else:
+            self.selected_profile_id = self.profiles[0].id
         self.save()
 
     def update(self, updated: SSHProfile) -> None:
@@ -726,13 +733,20 @@ class TerminalSession:
 
 
 class ProfileEditor(tk.Toplevel):
-    def __init__(self, master: "App", profile: SSHProfile, on_save: Callable[[SSHProfile], None]) -> None:
+    def __init__(
+        self,
+        master: "App",
+        profile: SSHProfile,
+        on_save: Callable[[SSHProfile], None],
+        on_cancel: Callable[[], None] | None = None,
+    ) -> None:
         super().__init__(master)
         self.title("修改配置")
         self.geometry("620x720")
         self.minsize(560, 620)
         self.profile = SSHProfile.from_dict(profile.to_dict())
         self.on_save = on_save
+        self.on_cancel = on_cancel
         self.vars: dict[str, tk.Variable] = {}
         self.create_widgets()
         self.transient(master)
@@ -745,6 +759,7 @@ class ProfileEditor(tk.Toplevel):
         header = ttk.Frame(container)
         header.pack(fill=tk.X, pady=(0, 10))
         ttk.Label(header, text="修改配置", font=("Microsoft YaHei UI", 14, "bold")).pack(side=tk.LEFT)
+        ttk.Button(header, text="取消", command=self.cancel).pack(side=tk.RIGHT, padx=(6, 0))
         ttk.Button(header, text="完成", command=self.save).pack(side=tk.RIGHT)
 
         canvas = tk.Canvas(container, highlightthickness=0)
@@ -850,6 +865,11 @@ class ProfileEditor(tk.Toplevel):
         self.on_save(updated)
         self.destroy()
 
+    def cancel(self) -> None:
+        if self.on_cancel is not None:
+            self.on_cancel()
+        self.destroy()
+
 
 class App(tk.Tk):
     def __init__(self) -> None:
@@ -921,17 +941,16 @@ class App(tk.Tk):
 
         controls = ttk.Frame(self.sidebar, padding=10, style="Sidebar.TFrame")
         controls.pack(fill=tk.X)
-        ttk.Button(controls, text="+ Jupyter", command=lambda: self.add_profile("jupyter")).pack(
-            side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 4)
-        )
-        ttk.Button(controls, text="+ RStudio", command=lambda: self.add_profile("rstudio")).pack(
-            side=tk.LEFT, fill=tk.X, expand=True, padx=4
-        )
-        ttk.Button(controls, text="+ 终端", command=lambda: self.add_profile("terminal")).pack(
-            side=tk.LEFT, fill=tk.X, expand=True, padx=4
-        )
-        ttk.Button(controls, text="复制", command=self.duplicate_profile).pack(side=tk.LEFT, padx=4)
-        ttk.Button(controls, text="删除", command=self.delete_profile).pack(side=tk.LEFT, padx=(4, 0))
+        add_menu_button = ttk.Menubutton(controls, text="增加")
+        add_menu = tk.Menu(add_menu_button, tearoff=False)
+        add_menu.add_command(label="Jupyter 工作区", command=lambda: self.add_profile("jupyter"))
+        add_menu.add_command(label="RStudio 工作区", command=lambda: self.add_profile("rstudio"))
+        add_menu.add_command(label="终端工作区", command=lambda: self.add_profile("terminal"))
+        add_menu.add_command(label="SFTP 工作区", command=lambda: self.add_profile("sftp"))
+        add_menu_button.configure(menu=add_menu)
+        add_menu_button.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 4))
+        ttk.Button(controls, text="删除", command=self.delete_profile).pack(side=tk.LEFT, fill=tk.X, expand=True, padx=4)
+        ttk.Button(controls, text="设置", command=self.open_settings).pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(4, 0))
 
     def post(self, callback: Callable[[], None]) -> None:
         self.ui_queue.put(callback)
@@ -1484,15 +1503,23 @@ class App(tk.Tk):
         self.render_selected_profile()
 
     def add_profile(self, kind: str) -> None:
+        previous_profile_id = self.store.selected_profile_id
         profile = self.store.add(kind)
         self.refresh_sidebar()
-        self.edit_profile(profile)
+        self.edit_profile(
+            profile,
+            on_cancel=lambda profile_id=profile.id, fallback_id=previous_profile_id: self.cancel_new_profile(profile_id, fallback_id),
+        )
 
     def duplicate_profile(self) -> None:
+        previous_profile_id = self.store.selected_profile_id
         profile = self.store.duplicate_selected()
         self.refresh_sidebar()
         if profile is not None:
-            self.edit_profile(profile)
+            self.edit_profile(
+                profile,
+                on_cancel=lambda profile_id=profile.id, fallback_id=previous_profile_id: self.cancel_new_profile(profile_id, fallback_id),
+            )
 
     def delete_profile(self) -> None:
         if messagebox.askyesno(APP_NAME, "确定删除当前配置吗？"):
@@ -1500,14 +1527,22 @@ class App(tk.Tk):
             self.refresh_sidebar()
             self.render_selected_profile()
 
-    def edit_profile(self, profile: SSHProfile) -> None:
-        ProfileEditor(self, profile, self.save_profile)
+    def edit_profile(self, profile: SSHProfile, on_cancel: Callable[[], None] | None = None) -> None:
+        ProfileEditor(self, profile, self.save_profile, on_cancel)
+
+    def cancel_new_profile(self, profile_id: str, fallback_id: str | None) -> None:
+        self.store.delete_by_id(profile_id, fallback_id)
+        self.refresh_sidebar()
+        self.render_selected_profile()
 
     def save_profile(self, profile: SSHProfile) -> None:
         self.store.update(profile)
         self.store.selected_profile_id = profile.id
         self.refresh_sidebar()
         self.render_selected_profile()
+
+    def open_settings(self) -> None:
+        messagebox.showinfo(APP_NAME, "设置和自动更新在当前 Qt 版界面中提供。")
 
     def on_close(self) -> None:
         self.disconnect_tunnel()
