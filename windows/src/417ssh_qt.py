@@ -85,7 +85,7 @@ def app_version() -> str:
         text = version_file.read_text(encoding="utf-8").strip()
         if text:
             return text
-    return "0.4.4"
+    return "0.4.5"
 
 
 CURRENT_VERSION = app_version()
@@ -416,7 +416,8 @@ def prepare_windows_update(package_path: Path) -> Path:
     if sys.platform != "win32" or not getattr(sys, "frozen", False):
         raise RuntimeError("自动替换只能在打包后的 Windows portable 版中使用。")
 
-    install_root = update_work_dir() / f"install-{os.getpid()}-{int(time.time())}"
+    timestamp = int(time.time())
+    install_root = update_work_dir() / f"install-{os.getpid()}-{timestamp}"
     staging_dir = install_root / "staging"
     staging_dir.mkdir(parents=True, exist_ok=True)
 
@@ -426,7 +427,8 @@ def prepare_windows_update(package_path: Path) -> Path:
     current_exe = Path(sys.executable).resolve()
     current_dir = current_exe.parent
     backup_dir = install_root / "backup"
-    script_path = update_work_dir() / f"install-417ssh-update-{os.getpid()}-{int(time.time())}.bat"
+    script_path = update_work_dir() / f"install-417ssh-update-{os.getpid()}-{timestamp}.ps1"
+    log_path = update_work_dir() / f"install-417ssh-update-{os.getpid()}-{timestamp}.log"
     script_path.write_text(
         windows_update_script(
             pid=os.getpid(),
@@ -434,8 +436,9 @@ def prepare_windows_update(package_path: Path) -> Path:
             current_dir=current_dir,
             backup_dir=backup_dir,
             cleanup_dir=install_root,
+            log_path=log_path,
         ),
-        encoding="utf-8",
+        encoding="utf-8-sig",
     )
     return script_path
 
@@ -465,8 +468,8 @@ def find_windows_app_dir(staging_dir: Path) -> Path:
     return candidates[0].parent
 
 
-def batch_value(path: Path | str) -> str:
-    return str(path).replace("%", "%%")
+def powershell_literal(value: Path | str) -> str:
+    return "'" + str(value).replace("'", "''") + "'"
 
 
 def windows_update_script(
@@ -475,65 +478,166 @@ def windows_update_script(
     current_dir: Path,
     backup_dir: Path,
     cleanup_dir: Path,
+    log_path: Path,
 ) -> str:
-    return f"""@echo off
-setlocal
-set "APP_PID={pid}"
-set "SRC={batch_value(new_app_dir)}"
-set "DST={batch_value(current_dir)}"
-set "BACKUP={batch_value(backup_dir)}"
-set "CLEANUP={batch_value(cleanup_dir)}"
-set "EXE=417ssh.exe"
-set /A WAIT_COUNT=0
+    return f"""$ErrorActionPreference = 'Stop'
+$ProgressPreference = 'SilentlyContinue'
+$AppPid = {pid}
+$Source = {powershell_literal(new_app_dir)}
+$Destination = {powershell_literal(current_dir)}
+$Backup = {powershell_literal(backup_dir)}
+$Cleanup = {powershell_literal(cleanup_dir)}
+$LogPath = {powershell_literal(log_path)}
+$ExePath = Join-Path -Path $Destination -ChildPath '417ssh.exe'
 
-timeout /T 1 /NOBREAK >NUL
-taskkill /PID %APP_PID% /T >NUL 2>NUL
+function Write-UpdateLog {{
+    param([string]$Message)
+    try {{
+        $parent = Split-Path -Parent $LogPath
+        if ($parent) {{
+            New-Item -ItemType Directory -Force -Path $parent | Out-Null
+        }}
+        Add-Content -LiteralPath $LogPath -Value ("{{0}} {{1}}" -f (Get-Date -Format 's'), $Message) -Encoding UTF8
+    }} catch {{}}
+}}
 
-:wait_for_app
-tasklist /FI "PID eq %APP_PID%" 2>NUL | find "%APP_PID%" >NUL
-if not errorlevel 1 (
-  if %WAIT_COUNT% GEQ 15 (
-    taskkill /PID %APP_PID% /T /F >NUL 2>NUL
-  )
-  if %WAIT_COUNT% GEQ 30 (
-    exit /B 1
-  )
-  set /A WAIT_COUNT+=1
-  timeout /T 1 /NOBREAK >NUL
-  goto wait_for_app
-)
+function Wait-AppExit {{
+    $softDeadline = (Get-Date).AddSeconds(20)
+    $hardDeadline = (Get-Date).AddSeconds(45)
+    while ($true) {{
+        $process = Get-Process -Id $AppPid -ErrorAction SilentlyContinue
+        if ($null -eq $process) {{
+            return
+        }}
+        if ((Get-Date) -gt $softDeadline) {{
+            Write-UpdateLog 'Forcing application process to exit.'
+            Stop-Process -Id $AppPid -Force -ErrorAction SilentlyContinue
+        }}
+        if ((Get-Date) -gt $hardDeadline) {{
+            throw 'Application process did not exit.'
+        }}
+        Start-Sleep -Milliseconds 500
+    }}
+}}
 
-if exist "%BACKUP%" rmdir /S /Q "%BACKUP%" >NUL 2>NUL
-mkdir "%BACKUP%" >NUL 2>NUL
-robocopy "%DST%" "%BACKUP%" /E /NFL /NDL /NJH /NJS /NP >NUL
-robocopy "%SRC%" "%DST%" /E /NFL /NDL /NJH /NJS /NP >NUL
-set "COPY_CODE=%ERRORLEVEL%"
+function Copy-DirectoryContents {{
+    param(
+        [string]$From,
+        [string]$To
+    )
+    if (-not (Test-Path -LiteralPath $To)) {{
+        New-Item -ItemType Directory -Force -Path $To | Out-Null
+    }}
+    foreach ($item in Get-ChildItem -LiteralPath $From -Force -ErrorAction Stop) {{
+        Copy-Item -LiteralPath $item.FullName -Destination $To -Recurse -Force -ErrorAction Stop
+    }}
+}}
 
-if %COPY_CODE% LEQ 7 (
-  start "" "%DST%\\%EXE%"
-  rmdir /S /Q "%BACKUP%" >NUL 2>NUL
-  rmdir /S /Q "%CLEANUP%" >NUL 2>NUL
-  del "%~f0" >NUL 2>NUL
-  exit /B 0
-)
+try {{
+    Write-UpdateLog 'Updater started.'
+    Wait-AppExit
 
-robocopy "%BACKUP%" "%DST%" /E /NFL /NDL /NJH /NJS /NP >NUL
-start "" "%DST%\\%EXE%"
-exit /B %COPY_CODE%
+    if (-not (Test-Path -LiteralPath (Join-Path -Path $Source -ChildPath '417ssh.exe'))) {{
+        throw 'Update package does not contain 417ssh.exe.'
+    }}
+    if (-not (Test-Path -LiteralPath $Destination)) {{
+        throw 'Current application folder is missing.'
+    }}
+
+    if (Test-Path -LiteralPath $Backup) {{
+        Remove-Item -LiteralPath $Backup -Recurse -Force -ErrorAction SilentlyContinue
+    }}
+    New-Item -ItemType Directory -Force -Path $Backup | Out-Null
+
+    Write-UpdateLog 'Backing up current application.'
+    Copy-DirectoryContents -From $Destination -To $Backup
+
+    Write-UpdateLog 'Copying new application files.'
+    Copy-DirectoryContents -From $Source -To $Destination
+
+    Write-UpdateLog 'Starting updated application.'
+    Start-Process -FilePath $ExePath -WorkingDirectory $Destination
+
+    Remove-Item -LiteralPath $Backup -Recurse -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $Cleanup -Recurse -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $PSCommandPath -Force -ErrorAction SilentlyContinue
+    Write-UpdateLog 'Update finished.'
+    exit 0
+}} catch {{
+    Write-UpdateLog ("Update failed: " + $_.Exception.Message)
+    try {{
+        if ((Test-Path -LiteralPath $Backup) -and (Test-Path -LiteralPath $Destination)) {{
+            Write-UpdateLog 'Restoring previous application.'
+            Copy-DirectoryContents -From $Backup -To $Destination
+        }}
+    }} catch {{
+        Write-UpdateLog ("Restore failed: " + $_.Exception.Message)
+    }}
+    try {{
+        if (Test-Path -LiteralPath $ExePath) {{
+            Start-Process -FilePath $ExePath -WorkingDirectory $Destination
+        }}
+    }} catch {{}}
+    exit 1
+}}
 """
+
+
+def windows_powershell_executable() -> str:
+    candidates: list[Path] = []
+    system_root = os.environ.get("SystemRoot")
+    if system_root:
+        root = Path(system_root)
+        candidates.extend(
+            [
+                root / "System32" / "WindowsPowerShell" / "v1.0" / "powershell.exe",
+                root / "Sysnative" / "WindowsPowerShell" / "v1.0" / "powershell.exe",
+            ]
+        )
+
+    for name in ("powershell.exe", "pwsh.exe"):
+        found = shutil.which(name)
+        if found:
+            candidates.append(Path(found))
+
+    for candidate in candidates:
+        if candidate.exists():
+            return str(candidate)
+    return "powershell.exe"
 
 
 def launch_windows_update_script(script_path: Path) -> None:
     creationflags = 0
+    startupinfo = None
     if sys.platform == "win32":
         creationflags |= subprocess.CREATE_NEW_PROCESS_GROUP
+        if hasattr(subprocess, "CREATE_NO_WINDOW"):
+            creationflags |= subprocess.CREATE_NO_WINDOW
         if hasattr(subprocess, "DETACHED_PROCESS"):
             creationflags |= subprocess.DETACHED_PROCESS
+        startupinfo = subprocess.STARTUPINFO()
+        startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+        startupinfo.wShowWindow = 0
 
     subprocess.Popen(
-        ["cmd", "/c", str(script_path)],
+        [
+            windows_powershell_executable(),
+            "-NoProfile",
+            "-NonInteractive",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-WindowStyle",
+            "Hidden",
+            "-File",
+            str(script_path),
+        ],
         close_fds=True,
         creationflags=creationflags,
+        cwd=str(script_path.parent),
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        startupinfo=startupinfo,
     )
 
 
@@ -1001,7 +1105,7 @@ class AppSettingsDialog(QDialog):
         button_row.addStretch(1)
         layout.addLayout(button_row)
 
-        tip = QLabel("Windows 版会下载 GitHub Release 中的 portable .zip，自动解压并替换当前 portable 文件夹，然后重启应用。")
+        tip = QLabel("Windows 版会下载 GitHub Release 中的 portable .zip，在后台解压并替换当前 portable 文件夹，然后自动重启应用。")
         tip.setWordWrap(True)
         tip.setStyleSheet("color: #6b7280; font-size: 12px;")
         layout.addWidget(tip)
@@ -4306,7 +4410,7 @@ cp -a -- "$src" "$target_dir/"
 
     def handle_update_downloaded(self, path_text: str) -> None:
         script_path = Path(path_text)
-        self.update_status = "安装脚本已启动，正在重启应用"
+        self.update_status = "正在后台安装更新，应用将自动重启"
         self.update_dialog_refresh()
 
         try:
@@ -4315,7 +4419,7 @@ cp -a -- "$src" "$target_dir/"
             if app is not None:
                 QTimer.singleShot(250, app.quit)
         except Exception as exc:
-            QMessageBox.critical(self, APP_NAME, f"启动安装脚本失败：{exc}")
+            QMessageBox.critical(self, APP_NAME, f"启动后台安装失败：{exc}")
 
     def handle_update_status(self, status: str) -> None:
         self.update_status = status

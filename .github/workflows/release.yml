@@ -202,6 +202,8 @@ jobs:
           417ssh $VERSION portable packages.
 
           Highlights:
+          - Windows download-and-install updates now run through a hidden background PowerShell updater instead of opening a visible cmd/Windows Terminal window.
+          - Windows updater writes an install log, backs up the current portable folder, and attempts rollback plus app restart if replacement fails.
           - Windows built-in terminal now uses a bundled xterm.js terminal emulator connected to the Paramiko SSH PTY, instead of rendering terminal output in a simulated text box.
           - Windows terminal now lets xterm.js handle ANSI, cursor movement, alternate screen, full-screen terminal apps, selection, paste, and resize behavior.
           - Windows now keeps Jupyter/RStudio tunnels and terminal sessions per workspace, matching the macOS behavior when switching between workspaces.
