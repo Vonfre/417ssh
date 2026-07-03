@@ -80,7 +80,7 @@ dist\417ssh-<版本>-win-portable.zip
 - `src\417ssh_qt.py` 是当前 Windows 图形界面入口；`src\417ssh_windows.py` 保留共享的配置、SSH、隧道和 Paramiko 连接逻辑。
 - 切换工作区会保留已连接的 Jupyter/RStudio 隧道、终端和 SFTP 文件浏览状态，终端 SFTP 侧栏的路径、列表、筛选和缓存会按连接分别保存。
 - SFTP 会按连接配置复用 SSH 连接；多个 SFTP 标签可以同时连接不同服务器，同一个服务器的连续目录和文件操作会复用连接。
-- 设置里可以检查 GitHub Releases 更新；检测到新版本后会下载 portable `.zip`，在后台自动解压、替换当前 portable 文件夹并重启，不会弹出命令行窗口。
-- Windows 自动更新会先备份当前 portable 文件夹；如果替换失败，会尝试回滚并重启原版本。
+- 设置里可以检查 GitHub Releases 更新；检测到新版本后会显示下载进度，下载 portable `.zip`，交给后台 updater 在主程序退出后自解压、替换当前 portable 文件夹并重启，不会弹出命令行窗口。
+- Windows 自动更新会先备份当前 portable 文件夹，再清空旧目录并复制新版；如果替换失败，会尝试回滚并重启原版本。
 - `0.4.5` 之前的旧版更新器可能会弹出 `find "<PID>"` 命令行并中断更新；从这些旧版本升级时请手动下载新版 zip 覆盖一次，之后再使用设置里的自动更新。
 - 发布新版本时，release asset 使用 `417ssh-<版本>-win-portable.zip` 命名。

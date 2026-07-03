@@ -41,6 +41,7 @@ from PySide6.QtWidgets import (
     QMenu,
     QMessageBox,
     QPlainTextEdit,
+    QProgressBar,
     QPushButton,
     QScrollArea,
     QSpinBox,
@@ -86,7 +87,7 @@ def app_version() -> str:
         text = version_file.read_text(encoding="utf-8").strip()
         if text:
             return text
-    return "0.4.7"
+    return "0.4.8"
 
 
 CURRENT_VERSION = app_version()
@@ -390,7 +391,7 @@ def update_work_dir() -> Path:
     return root
 
 
-def download_release_asset(asset: dict) -> Path:
+def download_release_asset(asset: dict, progress_callback: Callable[[int, int | None], None] | None = None) -> Path:
     name = str(asset.get("name") or "417ssh-update.zip")
     url = str(asset.get("browser_download_url") or "")
     if not url:
@@ -398,18 +399,35 @@ def download_release_asset(asset: dict) -> Path:
 
     target_dir = update_work_dir()
     destination = target_dir / name
+    partial_destination = destination.with_name(destination.name + ".part")
 
     request = urllib.request.Request(url, headers={"User-Agent": f"417ssh/{CURRENT_VERSION}"})
     try:
         with urllib.request.urlopen(request, timeout=120) as response:
-            with destination.open("wb") as handle:
+            total_header = response.headers.get("Content-Length")
+            try:
+                total_size = int(total_header) if total_header else None
+            except ValueError:
+                total_size = None
+            downloaded = 0
+            if progress_callback is not None:
+                progress_callback(downloaded, total_size)
+            if partial_destination.exists():
+                partial_destination.unlink()
+            with partial_destination.open("wb") as handle:
                 while True:
                     chunk = response.read(1024 * 512)
                     if not chunk:
                         break
                     handle.write(chunk)
+                    downloaded += len(chunk)
+                    if progress_callback is not None:
+                        progress_callback(downloaded, total_size)
     except urllib.error.HTTPError as exc:
         raise RuntimeError(github_http_error_message(exc.code)) from exc
+    if destination.exists():
+        destination.unlink()
+    shutil.move(str(partial_destination), str(destination))
     return destination
 
 
@@ -421,9 +439,7 @@ def prepare_windows_update(package_path: Path) -> Path:
     install_root = update_work_dir() / f"install-{os.getpid()}-{timestamp}"
     staging_dir = install_root / "staging"
     staging_dir.mkdir(parents=True, exist_ok=True)
-
-    safe_extract_zip(package_path, staging_dir)
-    new_app_dir = find_windows_app_dir(staging_dir)
+    validate_update_package_zip(package_path)
 
     current_exe = Path(sys.executable).resolve()
     current_dir = current_exe.parent
@@ -433,8 +449,9 @@ def prepare_windows_update(package_path: Path) -> Path:
     script_path.write_text(
         windows_update_script(
             pid=os.getpid(),
-            new_app_dir=new_app_dir,
+            package_path=package_path,
             current_dir=current_dir,
+            staging_dir=staging_dir,
             backup_dir=backup_dir,
             cleanup_dir=install_root,
             log_path=log_path,
@@ -442,6 +459,27 @@ def prepare_windows_update(package_path: Path) -> Path:
         encoding="utf-8-sig",
     )
     return script_path
+
+
+def validate_update_package_zip(package_path: Path) -> None:
+    if not package_path.exists():
+        raise RuntimeError("更新包不存在。")
+    destination_root = (update_work_dir() / "validate").resolve()
+    has_app = False
+    with zipfile.ZipFile(package_path) as archive:
+        for member in archive.infolist():
+            normalized_name = member.filename.replace("\\", "/")
+            member_path = (destination_root / normalized_name).resolve()
+            try:
+                common_path = os.path.commonpath([str(destination_root), str(member_path)])
+            except ValueError as exc:
+                raise RuntimeError("更新包包含不安全路径。") from exc
+            if common_path != str(destination_root):
+                raise RuntimeError("更新包包含不安全路径。")
+            if normalized_name.rsplit("/", 1)[-1].lower() == "417ssh.exe":
+                has_app = True
+    if not has_app:
+        raise RuntimeError("更新包里没有找到 417ssh.exe。")
 
 
 def safe_extract_zip(package_path: Path, destination: Path) -> None:
@@ -475,8 +513,9 @@ def powershell_literal(value: Path | str) -> str:
 
 def windows_update_script(
     pid: int,
-    new_app_dir: Path,
+    package_path: Path,
     current_dir: Path,
+    staging_dir: Path,
     backup_dir: Path,
     cleanup_dir: Path,
     log_path: Path,
@@ -484,7 +523,8 @@ def windows_update_script(
     return f"""$ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 $AppPid = {pid}
-$Source = {powershell_literal(new_app_dir)}
+$Package = {powershell_literal(package_path)}
+$Staging = {powershell_literal(staging_dir)}
 $Destination = {powershell_literal(current_dir)}
 $Backup = {powershell_literal(backup_dir)}
 $Cleanup = {powershell_literal(cleanup_dir)}
@@ -500,6 +540,47 @@ function Write-UpdateLog {{
         }}
         Add-Content -LiteralPath $LogPath -Value ("{{0}} {{1}}" -f (Get-Date -Format 's'), $Message) -Encoding UTF8
     }} catch {{}}
+}}
+
+function Expand-UpdatePackage {{
+    if (-not (Test-Path -LiteralPath $Package)) {{
+        throw 'Update package is missing.'
+    }}
+    if (Test-Path -LiteralPath $Staging) {{
+        Remove-Item -LiteralPath $Staging -Recurse -Force -ErrorAction SilentlyContinue
+    }}
+    New-Item -ItemType Directory -Force -Path $Staging | Out-Null
+
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+    $stagingRoot = [System.IO.Path]::GetFullPath($Staging).TrimEnd([char]92) + [string][char]92
+    $archive = [System.IO.Compression.ZipFile]::OpenRead($Package)
+    try {{
+        foreach ($entry in $archive.Entries) {{
+            if ([string]::IsNullOrWhiteSpace($entry.FullName)) {{
+                continue
+            }}
+            $entryTarget = [System.IO.Path]::GetFullPath((Join-Path -Path $Staging -ChildPath $entry.FullName))
+            if (-not $entryTarget.StartsWith($stagingRoot, [System.StringComparison]::OrdinalIgnoreCase)) {{
+                throw 'Update package contains an unsafe path.'
+            }}
+        }}
+    }} finally {{
+        $archive.Dispose()
+    }}
+    [System.IO.Compression.ZipFile]::ExtractToDirectory($Package, $Staging)
+}}
+
+function Find-NewAppDir {{
+    $candidates = @(Get-ChildItem -LiteralPath $Staging -Filter '417ssh.exe' -Recurse -File -ErrorAction SilentlyContinue)
+    if ($candidates.Count -eq 0) {{
+        throw 'Update package does not contain 417ssh.exe.'
+    }}
+    foreach ($candidate in $candidates) {{
+        if ($candidate.Directory.Name -ieq '417ssh') {{
+            return $candidate.Directory.FullName
+        }}
+    }}
+    return $candidates[0].Directory.FullName
 }}
 
 function Wait-AppExit {{
@@ -559,6 +640,17 @@ function Invoke-WithRetry {{
     throw "$Label failed after retries: $lastError"
 }}
 
+function Remove-DirectoryContents {{
+    param([string]$Path)
+    if (-not (Test-Path -LiteralPath $Path)) {{
+        New-Item -ItemType Directory -Force -Path $Path | Out-Null
+        return
+    }}
+    foreach ($item in Get-ChildItem -LiteralPath $Path -Force -ErrorAction SilentlyContinue) {{
+        Remove-Item -LiteralPath $item.FullName -Recurse -Force -ErrorAction Stop
+    }}
+}}
+
 function Copy-DirectoryContents {{
     param(
         [string]$From,
@@ -577,11 +669,15 @@ try {{
     Wait-AppExit
     Stop-AppProcessesInDestination
 
-    if (-not (Test-Path -LiteralPath (Join-Path -Path $Source -ChildPath '417ssh.exe'))) {{
-        throw 'Update package does not contain 417ssh.exe.'
-    }}
     if (-not (Test-Path -LiteralPath $Destination)) {{
         throw 'Current application folder is missing.'
+    }}
+
+    Write-UpdateLog 'Extracting update package.'
+    Invoke-WithRetry -Label 'Extract package' -Action {{ Expand-UpdatePackage }}
+    $Source = Find-NewAppDir
+    if (-not (Test-Path -LiteralPath (Join-Path -Path $Source -ChildPath '417ssh.exe'))) {{
+        throw 'Update package does not contain 417ssh.exe.'
     }}
 
     if (Test-Path -LiteralPath $Backup) {{
@@ -592,16 +688,20 @@ try {{
     Write-UpdateLog 'Backing up current application.'
     Invoke-WithRetry -Label 'Backup' -Action {{ Copy-DirectoryContents -From $Destination -To $Backup }}
 
+    Write-UpdateLog 'Cleaning current application folder.'
+    Invoke-WithRetry -Label 'Clean destination' -Action {{ Remove-DirectoryContents -Path $Destination }}
+
     Write-UpdateLog 'Copying new application files.'
     Invoke-WithRetry -Label 'Install copy' -Action {{ Copy-DirectoryContents -From $Source -To $Destination }}
 
     Write-UpdateLog 'Starting updated application.'
     Start-Process -FilePath $ExePath -WorkingDirectory $Destination
 
+    Write-UpdateLog 'Update finished.'
     Remove-Item -LiteralPath $Backup -Recurse -Force -ErrorAction SilentlyContinue
     Remove-Item -LiteralPath $Cleanup -Recurse -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $Package -Force -ErrorAction SilentlyContinue
     Remove-Item -LiteralPath $PSCommandPath -Force -ErrorAction SilentlyContinue
-    Write-UpdateLog 'Update finished.'
     exit 0
 }} catch {{
     Write-UpdateLog ("Update failed: " + $_.Exception.Message)
@@ -695,6 +795,7 @@ class Bridge(QObject):
     update_error = Signal(str)
     update_downloaded = Signal(str)
     update_status = Signal(str)
+    update_progress = Signal(object, object, str)
 
 
 def clear_layout(layout) -> None:
@@ -1148,6 +1249,18 @@ class AppSettingsDialog(QDialog):
         self.status_label.setWordWrap(True)
         layout.addWidget(self.status_label)
 
+        self.progress_label = QLabel("下载进度：等待开始")
+        self.progress_label.setStyleSheet("color: #6b7280; font-size: 12px;")
+        self.progress_label.setVisible(False)
+        layout.addWidget(self.progress_label)
+
+        self.progress_bar = QProgressBar()
+        self.progress_bar.setRange(0, 100)
+        self.progress_bar.setValue(0)
+        self.progress_bar.setTextVisible(True)
+        self.progress_bar.setVisible(False)
+        layout.addWidget(self.progress_bar)
+
         self.release_notes = QTextEdit()
         self.release_notes.setReadOnly(True)
         self.release_notes.setFixedHeight(115)
@@ -1168,7 +1281,7 @@ class AppSettingsDialog(QDialog):
         button_row.addStretch(1)
         layout.addLayout(button_row)
 
-        tip = QLabel("Windows 版会下载 GitHub Release 中的 portable .zip，在后台解压并替换当前 portable 文件夹，然后自动重启应用。")
+        tip = QLabel("Windows 版会显示下载进度，并把 GitHub Release 中的 portable .zip 交给后台 updater 自解压、替换当前 portable 文件夹，然后自动重启应用。")
         tip.setWordWrap(True)
         tip.setStyleSheet("color: #6b7280; font-size: 12px;")
         layout.addWidget(tip)
@@ -1194,8 +1307,9 @@ class AppSettingsDialog(QDialog):
         else:
             self.update_asset_label.setText("更新包：尚未检查")
         self.install_button.setText("下载并安装新版" if update_asset is not None and "发现新版本" in update_status else "下载并安装更新")
-        self.install_button.setEnabled(update_asset is not None and "发现新版本" in update_status)
-        self.check_button.setEnabled("正在" not in update_status)
+        is_busy = "正在" in update_status
+        self.install_button.setEnabled(update_asset is not None and "发现新版本" in update_status and not is_busy)
+        self.check_button.setEnabled(not is_busy)
 
         if latest_release:
             title = latest_release.get("name") or latest_release.get("tag_name") or "417ssh 更新"
@@ -1204,6 +1318,26 @@ class AppSettingsDialog(QDialog):
             self.release_notes.setPlainText(f"{title}\n\n更新包：{asset_name}\n\n{body}")
         else:
             self.release_notes.setPlainText("还没有检查更新。")
+
+    def set_update_progress(self, downloaded: int, total: int | None, update_status: str) -> None:
+        is_active = "正在下载" in update_status or "准备安装" in update_status or "后台安装" in update_status
+        if not is_active and downloaded <= 0:
+            self.progress_label.setVisible(False)
+            self.progress_bar.setVisible(False)
+            self.progress_bar.setRange(0, 100)
+            self.progress_bar.setValue(0)
+            return
+
+        self.progress_label.setVisible(True)
+        self.progress_bar.setVisible(True)
+        if total and total > 0:
+            percent = max(0, min(100, int(downloaded * 100 / total)))
+            self.progress_bar.setRange(0, 100)
+            self.progress_bar.setValue(percent)
+            self.progress_label.setText(f"下载进度：{bytes_label(downloaded)} / {bytes_label(total)}")
+        else:
+            self.progress_bar.setRange(0, 0)
+            self.progress_label.setText(f"下载进度：{bytes_label(downloaded)}")
 
 
 class RemoteFileTree(QTreeWidget):
@@ -2515,6 +2649,8 @@ class MainWindow(QMainWindow):
         self.update_status = "尚未检查更新"
         self.latest_release: dict | None = None
         self.update_asset: dict | None = None
+        self.update_progress_downloaded = 0
+        self.update_progress_total: int | None = None
         self.settings_dialog: AppSettingsDialog | None = None
         self.update_check_silent = False
         self.sftp_connections: dict[str, object] = {}
@@ -2553,6 +2689,7 @@ class MainWindow(QMainWindow):
         self.bridge.update_error.connect(self.handle_update_error)
         self.bridge.update_downloaded.connect(self.handle_update_downloaded)
         self.bridge.update_status.connect(self.handle_update_status)
+        self.bridge.update_progress.connect(self.handle_update_progress)
 
     def build_shell(self) -> None:
         splitter = QSplitter(Qt.Horizontal)
@@ -4464,6 +4601,7 @@ cp -a -- "$src" "$target_dir/"
         dialog.check_requested.connect(lambda: self.check_updates(silent=False))
         dialog.install_requested.connect(self.download_and_install_update)
         dialog.finished.connect(lambda _result: self.clear_settings_dialog(dialog))
+        dialog.set_update_progress(self.update_progress_downloaded, self.update_progress_total, self.update_status)
         dialog.exec()
 
     def clear_settings_dialog(self, dialog: AppSettingsDialog) -> None:
@@ -4477,6 +4615,8 @@ cp -a -- "$src" "$target_dir/"
     def check_updates(self, silent: bool = False) -> None:
         self.update_check_silent = silent
         self.update_status = "正在检查更新"
+        self.update_progress_downloaded = 0
+        self.update_progress_total = None
         self.update_dialog_refresh()
 
         def work() -> None:
@@ -4508,6 +4648,8 @@ cp -a -- "$src" "$target_dir/"
             QMessageBox.information(self, APP_NAME, "当前已经是最新版本。")
 
     def handle_update_error(self, message: str) -> None:
+        self.update_progress_downloaded = 0
+        self.update_progress_total = None
         if self.update_check_silent:
             self.update_status = "尚未检查更新"
         else:
@@ -4521,11 +4663,17 @@ cp -a -- "$src" "$target_dir/"
             return
 
         self.update_status = "正在下载并准备安装"
+        self.update_progress_downloaded = 0
+        self.update_progress_total = None
         self.update_dialog_refresh()
 
         def work() -> None:
             try:
-                path = download_release_asset(self.update_asset)
+                def report_progress(downloaded: int, total: int | None) -> None:
+                    self.bridge.update_progress.emit(downloaded, total, "正在下载更新包")
+
+                path = download_release_asset(self.update_asset, report_progress)
+                self.bridge.update_status.emit("正在准备后台安装")
                 script_path = prepare_windows_update(path)
                 self.bridge.update_downloaded.emit(str(script_path))
             except Exception as exc:
@@ -4536,6 +4684,8 @@ cp -a -- "$src" "$target_dir/"
     def handle_update_downloaded(self, path_text: str) -> None:
         script_path = Path(path_text)
         self.update_status = "正在后台安装更新，应用将自动重启"
+        if self.update_progress_total:
+            self.update_progress_downloaded = self.update_progress_total
         self.update_dialog_refresh()
 
         try:
@@ -4544,15 +4694,36 @@ cp -a -- "$src" "$target_dir/"
             if app is not None:
                 QTimer.singleShot(250, app.quit)
         except Exception as exc:
+            self.update_status = f"启动后台安装失败：{exc}"
+            self.update_dialog_refresh()
             QMessageBox.critical(self, APP_NAME, f"启动后台安装失败：{exc}")
 
     def handle_update_status(self, status: str) -> None:
         self.update_status = status
         self.update_dialog_refresh()
 
+    def handle_update_progress(self, downloaded: object, total: object, status: str) -> None:
+        try:
+            self.update_progress_downloaded = max(0, int(downloaded or 0))
+        except (TypeError, ValueError):
+            self.update_progress_downloaded = 0
+        try:
+            parsed_total = int(total) if total is not None else 0
+        except (TypeError, ValueError):
+            parsed_total = 0
+        self.update_progress_total = parsed_total if parsed_total > 0 else None
+        if status:
+            self.update_status = status
+        self.update_dialog_refresh()
+
     def update_dialog_refresh(self) -> None:
         if self.settings_dialog is not None:
             self.settings_dialog.set_update_state(self.update_status, self.latest_release, self.update_asset)
+            self.settings_dialog.set_update_progress(
+                self.update_progress_downloaded,
+                self.update_progress_total,
+                self.update_status,
+            )
 
     def add_profile(self, kind: str) -> None:
         previous_profile_id = self.store.selected_profile_id
