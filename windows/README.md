@@ -3,6 +3,7 @@
 这是 `417ssh` 的 Windows 版本，界面结构和功能尽量贴近 macOS 版：
 
 - 保存多组 Jupyter / RStudio / 终端 / SFTP 工作区配置。
+- 配置窗口支持识别现有 `ssh ...` 命令，自动填入目标主机、跳板机、端口转发、压缩、详细日志和密钥路径。
 - 支持目标机、跳板机、密码、密钥、SSH keepalive。
 - 建立 Jupyter 或 RStudio Server 本地端口转发，并在应用内嵌浏览器打开 `http://127.0.0.1:<端口>/<路径>`。
 - 提供简易内置 SSH 终端，也可以打开 Windows 原生 `cmd.exe` 里的 `ssh`。
@@ -73,6 +74,7 @@ dist\417ssh-<版本>-win-portable.zip
 - Jupyter/RStudio 页面优先使用 Qt WebEngine 内嵌在窗口里；如果当前 Python 环境没有 WebEngine，会回退到系统默认浏览器。
 - “原生终端”调用 Windows 自带 OpenSSH 的 `ssh` 命令；如果用密码登录，需要在弹出的终端里手动输入密码。
 - 如果要使用密钥，请在配置里填写 Windows 路径，例如 `C:\Users\you\.ssh\id_ed25519`。
+- 连接配置只保存在 `%APPDATA%\417ssh\profiles.json`，不会写入 GitHub 仓库或发布包。
 - `src\417ssh_qt.py` 是当前 Windows 图形界面入口；`src\417ssh_windows.py` 保留共享的配置、SSH、隧道和 Paramiko 连接逻辑。
 - SFTP 会按连接配置复用 SSH 连接；多个 SFTP 面板可以同时连接不同服务器，同一个服务器的连续目录和文件操作会复用连接。
 - 设置里可以检查 GitHub Releases 更新；检测到新版本后会下载 portable `.zip`，自动解压、替换当前 portable 文件夹并重启。

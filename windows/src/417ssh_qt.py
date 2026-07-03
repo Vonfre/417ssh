@@ -76,7 +76,7 @@ def app_version() -> str:
         text = version_file.read_text(encoding="utf-8").strip()
         if text:
             return text
-    return "0.3.3"
+    return "0.3.4"
 
 
 CURRENT_VERSION = app_version()
@@ -123,6 +123,127 @@ def load_app_settings() -> dict:
 def save_app_settings(settings: dict) -> None:
     core.CONFIG_DIR.mkdir(parents=True, exist_ok=True)
     SETTINGS_FILE.write_text(json.dumps(settings, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def endpoint_parts(value: str, default_port: int | None = None) -> tuple[str, str, int | None]:
+    endpoint = value.strip()
+    user = ""
+    if "@" in endpoint:
+        user, endpoint = endpoint.rsplit("@", 1)
+    host = endpoint
+    port = default_port
+    if ":" in endpoint:
+        possible_host, possible_port = endpoint.rsplit(":", 1)
+        if possible_port:
+            try:
+                host = possible_host
+                port = int(possible_port)
+            except ValueError as exc:
+                raise ValueError(f"端口不是有效数字：{possible_port}") from exc
+    return user, host, port
+
+
+def parse_forward_spec(value: str) -> tuple[int, str, int]:
+    parts = value.split(":")
+    if len(parts) == 3:
+        local_port, remote_host, remote_port = parts
+    elif len(parts) == 4:
+        _bind_host, local_port, remote_host, remote_port = parts
+    else:
+        raise ValueError(f"无法识别 -L 转发：{value}")
+    try:
+        return int(local_port), remote_host, int(remote_port)
+    except ValueError as exc:
+        raise ValueError(f"无法识别 -L 转发：{value}") from exc
+
+
+def apply_short_flags(token: str, values: dict) -> None:
+    for flag in token[1:]:
+        if flag == "C":
+            values["compressionEnabled"] = True
+        elif flag == "v":
+            values["verboseLogging"] = True
+        elif flag == "g":
+            values["allowRemoteLocalPortAccess"] = True
+
+
+def profile_from_ssh_command(profile: SSHProfile, command: str, name: str = "", password: str = "") -> SSHProfile:
+    try:
+        tokens = shlex.split(command.strip())
+    except ValueError as exc:
+        raise ValueError(f"命令引号不完整：{exc}") from exc
+    if not tokens:
+        raise ValueError("SSH 命令为空。")
+
+    values = profile.to_dict()
+    values["compressionEnabled"] = False
+    values["verboseLogging"] = False
+    values["allowRemoteLocalPortAccess"] = False
+    index = 1 if tokens[0].endswith("ssh") or tokens[0].endswith("ssh.exe") else 0
+    target = ""
+
+    while index < len(tokens):
+        token = tokens[index]
+        if token == "--":
+            index += 1
+            target = tokens[index] if index < len(tokens) else ""
+            break
+        if not token.startswith("-") or token == "-":
+            target = token
+            break
+
+        if token == "-L":
+            index += 1
+            if index >= len(tokens):
+                raise ValueError("缺少 -L 转发参数。")
+            values["localPort"], values["remoteHost"], values["remotePort"] = parse_forward_spec(tokens[index])
+        elif token.startswith("-L") and len(token) > 2:
+            values["localPort"], values["remoteHost"], values["remotePort"] = parse_forward_spec(token[2:])
+        elif token == "-J":
+            index += 1
+            if index >= len(tokens):
+                raise ValueError("缺少 -J 跳板机参数。")
+            jump_user, jump_host, jump_port = endpoint_parts(tokens[index], 22)
+            values["jumpUser"] = jump_user
+            values["jumpHost"] = jump_host
+            values["jumpPort"] = jump_port or 22
+        elif token.startswith("-J") and len(token) > 2:
+            jump_user, jump_host, jump_port = endpoint_parts(token[2:], 22)
+            values["jumpUser"] = jump_user
+            values["jumpHost"] = jump_host
+            values["jumpPort"] = jump_port or 22
+        elif token == "-p":
+            index += 1
+            if index >= len(tokens):
+                raise ValueError("缺少 -p 端口参数。")
+            values["targetPort"] = int(tokens[index])
+        elif token.startswith("-p") and len(token) > 2:
+            values["targetPort"] = int(token[2:])
+        elif token == "-i":
+            index += 1
+            if index < len(tokens):
+                values["identityFile"] = tokens[index]
+        elif token.startswith("-i") and len(token) > 2:
+            values["identityFile"] = token[2:]
+        elif token in {"-F", "-o"}:
+            index += 1
+        elif token.startswith("-") and not token.startswith("--"):
+            apply_short_flags(token, values)
+        index += 1
+
+    if not target:
+        raise ValueError("没有识别到目标主机，例如 user@target-host。")
+    target_user, target_host, target_port = endpoint_parts(target, values.get("targetPort") or 22)
+    if not target_host:
+        raise ValueError("没有识别到目标主机，例如 user@target-host。")
+    values["targetUser"] = target_user
+    values["targetHost"] = target_host
+    values["targetPort"] = target_port or 22
+    if name.strip():
+        values["name"] = name.strip()
+    if password:
+        values["sshPassword"] = password
+    return SSHProfile.from_dict(values)
 
 
 def version_parts(version: str) -> list[int]:
@@ -536,6 +657,9 @@ class ProfileEditor(QDialog):
         self.add_combo("workspaceKind", "工作区", [("Jupyter", "jupyter"), ("RStudio", "rstudio"), ("终端", "terminal"), ("SFTP", "sftp")])
         self.add_line("name", "名称")
         self.add_line("sshPassword", "SSH 密码", password=True)
+        import_button = QPushButton("识别 SSH 命令")
+        import_button.clicked.connect(self.import_ssh_command)
+        self.form.addWidget(import_button)
         self.add_line("jupyterPath", "页面路径")
 
         self.add_section("网页本地转发")
@@ -564,12 +688,12 @@ class ProfileEditor(QDialog):
         self.add_check("useSSHConfig", "使用本机 ~/.ssh/config")
 
         self.add_section("命令预览")
-        preview = QTextEdit()
-        preview.setReadOnly(True)
-        preview.setFixedHeight(78)
-        preview.setPlainText(self.profile.preview_command())
-        preview.setStyleSheet("font-family: Consolas, monospace; color: #6b7280;")
-        self.form.addWidget(preview)
+        self.preview = QTextEdit()
+        self.preview.setReadOnly(True)
+        self.preview.setFixedHeight(78)
+        self.preview.setPlainText(self.profile.preview_command())
+        self.preview.setStyleSheet("font-family: Consolas, monospace; color: #6b7280;")
+        self.form.addWidget(self.preview)
         self.form.addStretch(1)
 
     def add_section(self, title: str) -> None:
@@ -624,7 +748,7 @@ class ProfileEditor(QDialog):
         layout.addStretch(1)
         self.fields[name] = combo
 
-    def save(self) -> None:
+    def current_form_profile(self) -> SSHProfile:
         values = self.profile.to_dict()
         for name, widget in self.fields.items():
             if isinstance(widget, QLineEdit):
@@ -635,7 +759,73 @@ class ProfileEditor(QDialog):
                 values[name] = widget.isChecked()
             elif isinstance(widget, QComboBox):
                 values[name] = widget.currentData()
-        self.saved.emit(SSHProfile.from_dict(values))
+        return SSHProfile.from_dict(values)
+
+    def apply_profile_to_fields(self, profile: SSHProfile) -> None:
+        self.profile = profile
+        for name, widget in self.fields.items():
+            value = getattr(profile, name)
+            if isinstance(widget, QLineEdit):
+                widget.setText(str(value))
+            elif isinstance(widget, QSpinBox):
+                widget.setValue(int(value))
+            elif isinstance(widget, QCheckBox):
+                widget.setChecked(bool(value))
+            elif isinstance(widget, QComboBox):
+                index = widget.findData(value)
+                widget.setCurrentIndex(max(0, index))
+        if hasattr(self, "preview"):
+            self.preview.setPlainText(profile.preview_command())
+
+    def import_ssh_command(self) -> None:
+        dialog = QDialog(self)
+        dialog.setWindowTitle("识别 SSH 命令")
+        dialog.resize(620, 360)
+        layout = QVBoxLayout(dialog)
+        info = QLabel("先选择工作区类型，再粘贴 ssh 命令。名称和密码会写入当前配置。")
+        info.setWordWrap(True)
+        info.setStyleSheet("color: #6b7280;")
+        layout.addWidget(info)
+
+        command_input = QTextEdit()
+        command_input.setPlaceholderText("ssh -CNgv -L 8000:remote-host:8888 -J user@jump.example.com:22 user@target-host")
+        command_input.setFixedHeight(110)
+        layout.addWidget(command_input)
+
+        name_input = QLineEdit(self.fields["name"].text() if isinstance(self.fields.get("name"), QLineEdit) else self.profile.name)
+        name_input.setPlaceholderText("连接名称")
+        layout.addWidget(name_input)
+
+        password_input = QLineEdit()
+        password_input.setEchoMode(QLineEdit.Password)
+        password_input.setPlaceholderText("SSH 密码，可留空")
+        layout.addWidget(password_input)
+
+        buttons = QHBoxLayout()
+        buttons.addStretch(1)
+        cancel = QPushButton("取消")
+        cancel.clicked.connect(dialog.reject)
+        buttons.addWidget(cancel)
+        ok = QPushButton("识别并填入")
+        ok.clicked.connect(dialog.accept)
+        buttons.addWidget(ok)
+        layout.addLayout(buttons)
+
+        if dialog.exec() != QDialog.Accepted:
+            return
+        try:
+            imported = profile_from_ssh_command(
+                self.current_form_profile(),
+                command_input.toPlainText(),
+                name_input.text(),
+                password_input.text(),
+            )
+            self.apply_profile_to_fields(imported)
+        except Exception as exc:
+            QMessageBox.warning(self, APP_NAME, f"无法识别 SSH 命令：{exc}")
+
+    def save(self) -> None:
+        self.saved.emit(self.current_form_profile())
         self.accept()
 
 
@@ -983,12 +1173,18 @@ class SFTPPaneWidget(QFrame):
         self.refresh()
 
     def refresh_if_needed(self) -> None:
-        if self.current_profile() is not None and not self.state.entries:
+        profile = self.current_profile()
+        if profile is not None and profile.targetHost.strip() and not self.state.entries:
             self.refresh(self.state.current_path)
 
     def refresh(self, path: str | None = None) -> None:
         profile = self.current_profile()
         if profile is None:
+            return
+        if not profile.targetHost.strip():
+            self.state.status = "未填写目标主机"
+            self.state.entries = []
+            self.update_widgets()
             return
         remote_path = (path or self.state.current_path or ".").strip() or "."
         self.begin_navigation(profile, remote_path)
@@ -1732,10 +1928,7 @@ class MainWindow(QMainWindow):
         self.detail_layout.addWidget(container, 1)
 
     def default_sftp_profile_id(self, profile: SSHProfile) -> str | None:
-        if profile.targetHost.strip():
-            return profile.id
-        with_target = next((item for item in self.store.profiles if item.targetHost.strip()), None)
-        return with_target.id if with_target is not None else (self.store.profiles[0].id if self.store.profiles else None)
+        return profile.id
 
     def ensure_sftp_workspace_states(self, profile: SSHProfile) -> None:
         if not self.sftp_workspace_states:

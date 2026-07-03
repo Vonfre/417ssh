@@ -202,6 +202,8 @@ jobs:
           417ssh $VERSION portable packages.
 
           Highlights:
+          - Profile editor can import existing `ssh ...` commands and fill host, jump host, forwarding, flags, and identity file fields.
+          - Blank SFTP workspaces no longer auto-select another saved server; empty profiles stay local until configured.
           - New pure SFTP workspace supports 1-4 panes, including same-server multi-pane and multi-server layouts.
           - Drag and drop now supports local uploads and remote item transfer between SFTP panes, including the terminal SFTP side panel.
           - SFTP file browser supports right-click actions: open, download, copy, rename, delete, refresh, new folder, and permission editing.

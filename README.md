@@ -43,6 +43,7 @@ Windows portable 版本不需要安装 Python。配置文件保存在：
 ## 功能
 
 - 保存多组 SSH / Jupyter / RStudio / 终端工作区配置。
+- 配置窗口支持识别现有 `ssh ...` 命令，自动填入目标主机、跳板机、端口转发、压缩、详细日志和密钥路径。
 - 支持跳板机、目标主机、端口转发、密码、密钥和 SSH keepalive。
 - 一键建立本地 Jupyter 隧道，并在应用内打开 Jupyter Lab。
 - 一键建立本地 RStudio Server 隧道，并在应用内打开 RStudio 网页。
@@ -91,4 +92,5 @@ windows/    Windows 版本，Python + PySide6/Qt + Paramiko
 - 当前 macOS 包尚未做 Apple Developer ID 公证，首次双击可能触发 Gatekeeper 提示；按上面的右键打开步骤即可继续。
 - Windows 版本以 portable zip 分发；解压后运行 `417ssh.exe`，后续可在设置里直接更新。
 - SSH 密码会随连接配置保存在应用配置里；如果不填写密码，应用会使用密钥或本机 SSH agent。
+- 连接配置保存在本机用户目录，不会写入 GitHub 仓库或发布包。
 - 旧版本或外部终端里已经启动的隧道不会被自动接管；如果端口被占用，可以在应用里关闭占用后重连。

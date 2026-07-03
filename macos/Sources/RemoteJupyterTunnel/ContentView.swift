@@ -872,6 +872,14 @@ private struct ProfileEditorView: View {
                 labeledTextField("名称", text: profile.name)
                 labeledSecureField("SSH 密码", text: profile.sshPassword)
 
+                SettingRow("快捷填写") {
+                    Button {
+                        importFromSSHCommand()
+                    } label: {
+                        Label("识别 SSH 命令", systemImage: "wand.and.stars")
+                    }
+                }
+
                 if currentProfile.workspaceKind.isWebWorkspace {
                     SettingRow("\(currentProfile.workspaceKind.title) 地址") {
                         Text(currentProfile.localURLString)
@@ -952,6 +960,347 @@ private struct ProfileEditorView: View {
             TextField(label, value: value, format: .number)
                 .frame(maxWidth: 130)
         }
+    }
+
+    private func importFromSSHCommand() {
+        guard let input = promptSSHCommandImport(defaultName: currentProfile.name) else { return }
+
+        do {
+            var updatedProfile = currentProfile
+            try updatedProfile.applySSHCommand(input.command)
+
+            if !input.name.isEmpty {
+                updatedProfile.name = input.name
+            }
+
+            if !input.password.isEmpty {
+                updatedProfile.sshPassword = input.password
+            }
+
+            profileBox.set(updatedProfile)
+        } catch {
+            showAlert(title: "无法识别 SSH 命令", message: error.localizedDescription)
+        }
+    }
+
+    private func promptSSHCommandImport(defaultName: String) -> SSHCommandImportInput? {
+        let alert = NSAlert()
+        alert.messageText = "识别 SSH 命令"
+        alert.informativeText = "先在“工作区”里选好 Jupyter、RStudio、终端或 SFTP，再粘贴 ssh 命令。名称和密码会写入当前配置。"
+        alert.alertStyle = .informational
+        alert.addButton(withTitle: "识别并填入")
+        alert.addButton(withTitle: "取消")
+
+        let stack = NSStackView()
+        stack.orientation = .vertical
+        stack.spacing = 8
+        stack.translatesAutoresizingMaskIntoConstraints = false
+
+        let commandView = NSTextView(frame: NSRect(x: 0, y: 0, width: 520, height: 86))
+        commandView.font = .monospacedSystemFont(ofSize: 12, weight: .regular)
+        commandView.string = ""
+
+        let scrollView = NSScrollView(frame: NSRect(x: 0, y: 0, width: 520, height: 92))
+        scrollView.borderType = .bezelBorder
+        scrollView.hasVerticalScroller = true
+        scrollView.documentView = commandView
+
+        let nameField = NSTextField(string: defaultName)
+        nameField.placeholderString = "连接名称"
+
+        let passwordField = NSSecureTextField(string: "")
+        passwordField.placeholderString = "SSH 密码，可留空"
+
+        stack.addArrangedSubview(label("SSH 命令"))
+        stack.addArrangedSubview(scrollView)
+        stack.addArrangedSubview(label("名称"))
+        stack.addArrangedSubview(nameField)
+        stack.addArrangedSubview(label("密码"))
+        stack.addArrangedSubview(passwordField)
+
+        NSLayoutConstraint.activate([
+            scrollView.widthAnchor.constraint(equalToConstant: 520),
+            scrollView.heightAnchor.constraint(equalToConstant: 92),
+            nameField.widthAnchor.constraint(equalToConstant: 520),
+            passwordField.widthAnchor.constraint(equalToConstant: 520)
+        ])
+
+        alert.accessoryView = stack
+        guard alert.runModal() == .alertFirstButtonReturn else { return nil }
+        return SSHCommandImportInput(
+            command: commandView.string.trimmingCharacters(in: .whitespacesAndNewlines),
+            name: nameField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines),
+            password: passwordField.stringValue
+        )
+    }
+
+    private func label(_ text: String) -> NSTextField {
+        let field = NSTextField(labelWithString: text)
+        field.font = .systemFont(ofSize: 12, weight: .semibold)
+        field.textColor = .secondaryLabelColor
+        return field
+    }
+
+    private func showAlert(title: String, message: String) {
+        let alert = NSAlert()
+        alert.messageText = title
+        alert.informativeText = message
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "知道了")
+        alert.runModal()
+    }
+}
+
+private struct SSHCommandImportInput {
+    let command: String
+    let name: String
+    let password: String
+}
+
+private struct ParsedSSHCommand {
+    var targetUser = ""
+    var targetHost = ""
+    var targetPort: Int?
+    var jumpUser = ""
+    var jumpHost = ""
+    var jumpPort: Int?
+    var localPort: Int?
+    var remoteHost = ""
+    var remotePort: Int?
+    var identityFile = ""
+    var compressionEnabled = false
+    var verboseLogging = false
+    var allowRemoteLocalPortAccess = false
+}
+
+private enum SSHCommandImportError: LocalizedError {
+    case emptyCommand
+    case noTarget
+    case invalidForward(String)
+    case invalidPort(String)
+
+    var errorDescription: String? {
+        switch self {
+        case .emptyCommand:
+            return "SSH 命令为空。"
+        case .noTarget:
+            return "没有识别到目标主机，例如 user@target-host。"
+        case .invalidForward(let value):
+            return "无法识别 -L 转发：\(value)"
+        case .invalidPort(let value):
+            return "端口不是有效数字：\(value)"
+        }
+    }
+}
+
+private extension SSHProfile {
+    mutating func applySSHCommand(_ command: String) throws {
+        let parsed = try SSHCommandParser.parse(command)
+        targetUser = parsed.targetUser
+        targetHost = parsed.targetHost
+        targetPort = parsed.targetPort ?? 22
+        jumpUser = parsed.jumpUser
+        jumpHost = parsed.jumpHost
+        jumpPort = parsed.jumpPort ?? 22
+
+        if let localPort = parsed.localPort {
+            self.localPort = localPort
+        }
+        if !parsed.remoteHost.isEmpty {
+            remoteHost = parsed.remoteHost
+        }
+        if let remotePort = parsed.remotePort {
+            self.remotePort = remotePort
+        }
+        if !parsed.identityFile.isEmpty {
+            identityFile = parsed.identityFile
+        }
+        compressionEnabled = parsed.compressionEnabled
+        verboseLogging = parsed.verboseLogging
+        allowRemoteLocalPortAccess = parsed.allowRemoteLocalPortAccess
+    }
+}
+
+private enum SSHCommandParser {
+    static func parse(_ command: String) throws -> ParsedSSHCommand {
+        let tokens = try shellSplit(command)
+        guard !tokens.isEmpty else { throw SSHCommandImportError.emptyCommand }
+
+        var parsed = ParsedSSHCommand()
+        var index = tokens.first?.hasSuffix("ssh") == true || tokens.first?.hasSuffix("ssh.exe") == true ? 1 : 0
+        var target: String?
+
+        while index < tokens.count {
+            let token = tokens[index]
+            if token == "--" {
+                index += 1
+                if index < tokens.count {
+                    target = tokens[index]
+                }
+                break
+            }
+
+            if !token.hasPrefix("-") || token == "-" {
+                target = token
+                break
+            }
+
+            if token == "-L" {
+                index += 1
+                guard index < tokens.count else { throw SSHCommandImportError.invalidForward(token) }
+                try applyForward(tokens[index], to: &parsed)
+            } else if token.hasPrefix("-L"), token.count > 2 {
+                try applyForward(String(token.dropFirst(2)), to: &parsed)
+            } else if token == "-J" {
+                index += 1
+                guard index < tokens.count else { throw SSHCommandImportError.noTarget }
+                try applyJump(tokens[index], to: &parsed)
+            } else if token.hasPrefix("-J"), token.count > 2 {
+                try applyJump(String(token.dropFirst(2)), to: &parsed)
+            } else if token == "-p" {
+                index += 1
+                guard index < tokens.count, let port = Int(tokens[index]) else {
+                    throw SSHCommandImportError.invalidPort(index < tokens.count ? tokens[index] : token)
+                }
+                parsed.targetPort = port
+            } else if token.hasPrefix("-p"), token.count > 2 {
+                let value = String(token.dropFirst(2))
+                guard let port = Int(value) else { throw SSHCommandImportError.invalidPort(value) }
+                parsed.targetPort = port
+            } else if token == "-i" {
+                index += 1
+                if index < tokens.count {
+                    parsed.identityFile = tokens[index]
+                }
+            } else if token.hasPrefix("-i"), token.count > 2 {
+                parsed.identityFile = String(token.dropFirst(2))
+            } else if token == "-F" || token == "-o" {
+                index += 1
+            } else if token.hasPrefix("-"), !token.hasPrefix("--") {
+                applyCombinedFlags(token, to: &parsed)
+            }
+
+            index += 1
+        }
+
+        guard let target else { throw SSHCommandImportError.noTarget }
+        try applyEndpoint(target, targetPort: parsed.targetPort, user: &parsed.targetUser, host: &parsed.targetHost, port: &parsed.targetPort)
+        guard !parsed.targetHost.isEmpty else { throw SSHCommandImportError.noTarget }
+        return parsed
+    }
+
+    private static func applyCombinedFlags(_ token: String, to parsed: inout ParsedSSHCommand) {
+        for character in token.dropFirst() {
+            switch character {
+            case "C":
+                parsed.compressionEnabled = true
+            case "v":
+                parsed.verboseLogging = true
+            case "g":
+                parsed.allowRemoteLocalPortAccess = true
+            default:
+                continue
+            }
+        }
+    }
+
+    private static func applyForward(_ value: String, to parsed: inout ParsedSSHCommand) throws {
+        let parts = value.split(separator: ":", omittingEmptySubsequences: false).map(String.init)
+        if parts.count == 3 {
+            guard let localPort = Int(parts[0]), let remotePort = Int(parts[2]) else {
+                throw SSHCommandImportError.invalidForward(value)
+            }
+            parsed.localPort = localPort
+            parsed.remoteHost = parts[1]
+            parsed.remotePort = remotePort
+        } else if parts.count == 4 {
+            guard let localPort = Int(parts[1]), let remotePort = Int(parts[3]) else {
+                throw SSHCommandImportError.invalidForward(value)
+            }
+            parsed.localPort = localPort
+            parsed.remoteHost = parts[2]
+            parsed.remotePort = remotePort
+        } else {
+            throw SSHCommandImportError.invalidForward(value)
+        }
+    }
+
+    private static func applyJump(_ value: String, to parsed: inout ParsedSSHCommand) throws {
+        try applyEndpoint(value, targetPort: 22, user: &parsed.jumpUser, host: &parsed.jumpHost, port: &parsed.jumpPort)
+    }
+
+    private static func applyEndpoint(
+        _ value: String,
+        targetPort: Int?,
+        user: inout String,
+        host: inout String,
+        port: inout Int?
+    ) throws {
+        var endpoint = value
+        if let atIndex = endpoint.lastIndex(of: "@") {
+            user = String(endpoint[..<atIndex])
+            endpoint = String(endpoint[endpoint.index(after: atIndex)...])
+        }
+
+        if let colonIndex = endpoint.lastIndex(of: ":") {
+            let portText = String(endpoint[endpoint.index(after: colonIndex)...])
+            if !portText.isEmpty, let parsedPort = Int(portText) {
+                host = String(endpoint[..<colonIndex])
+                port = parsedPort
+                return
+            } else if !portText.isEmpty {
+                throw SSHCommandImportError.invalidPort(portText)
+            }
+        }
+
+        host = endpoint
+        port = targetPort ?? port
+    }
+
+    private static func shellSplit(_ command: String) throws -> [String] {
+        var tokens: [String] = []
+        var current = ""
+        var quote: Character?
+        var isEscaping = false
+
+        for character in command {
+            if isEscaping {
+                current.append(character)
+                isEscaping = false
+                continue
+            }
+
+            if character == "\\" {
+                isEscaping = true
+                continue
+            }
+
+            if let activeQuote = quote {
+                if character == activeQuote {
+                    quote = nil
+                } else {
+                    current.append(character)
+                }
+                continue
+            }
+
+            if character == "\"" || character == "'" {
+                quote = character
+            } else if character.isWhitespace {
+                if !current.isEmpty {
+                    tokens.append(current)
+                    current = ""
+                }
+            } else {
+                current.append(character)
+            }
+        }
+
+        if !current.isEmpty {
+            tokens.append(current)
+        }
+
+        return tokens
     }
 }
 
@@ -1454,12 +1803,7 @@ private struct SFTPWorkspaceView: View {
     }
 
     private var defaultPaneProfileID: UUID? {
-        if !currentProfile.targetHost.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            return currentProfile.id
-        }
-
-        return store.profiles.first(where: { !$0.targetHost.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty })?.id
-            ?? store.profiles.first?.id
+        currentProfile.id
     }
 
     private func addPane() {
@@ -1497,8 +1841,12 @@ private struct SFTPWorkspacePaneContainer: View {
     let onClose: (UUID) -> Void
 
     private var selectedProfile: SSHProfile? {
-        guard let profileID = pane.profileID else { return availableProfiles.first }
+        guard let profileID = pane.profileID else { return nil }
         return availableProfiles.first { $0.id == profileID }
+    }
+
+    private var selectedProfileCanConnect: Bool {
+        selectedProfile?.targetHost.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
     }
 
     var body: some View {
@@ -1528,7 +1876,7 @@ private struct SFTPWorkspacePaneContainer: View {
                 }
                 .buttonStyle(.bordered)
                 .help("刷新当前面板")
-                .disabled(selectedProfile == nil || sftp.status == .running)
+                .disabled(!selectedProfileCanConnect || sftp.status == .running)
 
                 Button {
                     onClose(pane.id)
@@ -1541,7 +1889,7 @@ private struct SFTPWorkspacePaneContainer: View {
             }
             .controlSize(.small)
 
-            if let selectedProfile {
+            if let selectedProfile, selectedProfileCanConnect {
                 RemoteFileBrowserPane(
                     profile: selectedProfile,
                     availableProfiles: availableProfiles,
@@ -1549,6 +1897,14 @@ private struct SFTPWorkspacePaneContainer: View {
                     remotePathText: $pane.remotePathText
                 )
                 .environmentObject(sftp)
+            } else if selectedProfile != nil {
+                EmptyStateView(
+                    systemImage: "server.rack",
+                    title: "未填写目标主机",
+                    subtitle: "先点“配置”或在上方选择已有服务器"
+                )
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .background(Color(nsColor: .textBackgroundColor), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
             } else {
                 EmptyStateView(
                     systemImage: "server.rack",
@@ -1571,22 +1927,18 @@ private struct SFTPWorkspacePaneContainer: View {
 
     private var profileSelection: Binding<UUID?> {
         Binding(
-            get: { pane.profileID ?? availableProfiles.first?.id },
+            get: { pane.profileID },
             set: { pane.profileID = $0 }
         )
     }
 
     private func refreshIfNeeded() {
-        if pane.profileID == nil {
-            pane.profileID = availableProfiles.first?.id
-        }
-
-        guard sftp.activeProfileID == nil else { return }
+        guard sftp.activeProfileID == nil, selectedProfileCanConnect else { return }
         refresh()
     }
 
     private func refresh() {
-        guard let selectedProfile else { return }
+        guard let selectedProfile, selectedProfileCanConnect else { return }
         sftp.refreshDirectory(profile: selectedProfile, path: pane.remotePathText)
     }
 }
