@@ -2,9 +2,9 @@
 
 这是 `417ssh` 的 Windows 版本，界面结构和功能尽量贴近 macOS 版：
 
-- 保存多组 Jupyter / 终端工作区配置。
+- 保存多组 Jupyter / RStudio / 终端工作区配置。
 - 支持目标机、跳板机、密码、密钥、SSH keepalive。
-- 建立 Jupyter 本地端口转发，并在应用内嵌浏览器打开 `http://127.0.0.1:<端口>/<路径>`。
+- 建立 Jupyter 或 RStudio Server 本地端口转发，并在应用内嵌浏览器打开 `http://127.0.0.1:<端口>/<路径>`。
 - 提供简易内置 SSH 终端，也可以打开 Windows 原生 `cmd.exe` 里的 `ssh`。
 - 浏览远程目录、返回上级、筛选、拖拽上传、按钮上传文件/文件夹、下载文件/文件夹。
 
@@ -66,8 +66,8 @@ dist\417ssh-<版本>-win-portable.zip
 
 ## 说明
 
-- Windows 版使用 Paramiko 连接 SSH，所以内置 Jupyter 隧道、内置终端和 SFTP 都支持密码登录。
-- Jupyter 页面优先使用 Qt WebEngine 内嵌在窗口里；如果当前 Python 环境没有 WebEngine，会回退到系统默认浏览器。
+- Windows 版使用 Paramiko 连接 SSH，所以内置网页隧道、内置终端和 SFTP 都支持密码登录。
+- Jupyter/RStudio 页面优先使用 Qt WebEngine 内嵌在窗口里；如果当前 Python 环境没有 WebEngine，会回退到系统默认浏览器。
 - “原生终端”调用 Windows 自带 OpenSSH 的 `ssh` 命令；如果用密码登录，需要在弹出的终端里手动输入密码。
 - 如果要使用密钥，请在配置里填写 Windows 路径，例如 `C:\Users\you\.ssh\id_ed25519`。
 - `src\417ssh_windows.py` 是早期 Tkinter 版本，默认入口已经切换到更接近 macOS UI 的 `src\417ssh_qt.py`。

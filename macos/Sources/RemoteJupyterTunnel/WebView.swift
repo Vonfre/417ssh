@@ -1,7 +1,7 @@
 import SwiftUI
 import WebKit
 
-struct JupyterWebView: NSViewRepresentable {
+struct WebWorkspaceBrowserView: NSViewRepresentable {
     let url: URL?
     let reloadToken: Int
 

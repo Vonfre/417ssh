@@ -45,6 +45,40 @@ def config_dir() -> Path:
 
 CONFIG_DIR = config_dir()
 PROFILES_FILE = CONFIG_DIR / "profiles.json"
+WEB_WORKSPACE_KINDS = {"jupyter", "rstudio"}
+
+
+def workspace_title(kind: str) -> str:
+    if kind == "rstudio":
+        return "RStudio"
+    if kind == "terminal":
+        return "终端"
+    return "Jupyter"
+
+
+def default_profile_name(kind: str, number: int) -> str:
+    title = workspace_title(kind)
+    if kind == "terminal":
+        return "新终端" if number <= 1 else f"新终端 {number}"
+    return f"新 {title}" if number <= 1 else f"新 {title} {number}"
+
+
+def default_local_port(kind: str, number: int) -> int:
+    if kind == "rstudio":
+        return 8008 + max(0, number - 1)
+    return 8000 + max(0, number - 1)
+
+
+def default_remote_host(kind: str) -> str:
+    return "localhost" if kind == "rstudio" else "127.0.0.1"
+
+
+def default_remote_port(kind: str) -> int:
+    return 8787 if kind == "rstudio" else 8888
+
+
+def default_http_path(kind: str) -> str:
+    return "/" if kind == "rstudio" else "/lab/tree/work"
 
 
 def normalized_http_path(value: str) -> str:
@@ -108,19 +142,17 @@ class SSHProfile:
         return cls(
             id=str(uuid.uuid4()),
             workspaceKind=kind,
-            name=("新 Jupyter" if number <= 1 else f"新 Jupyter {number}")
-            if kind == "jupyter"
-            else ("新终端" if number <= 1 else f"新终端 {number}"),
-            localPort=8000 + max(0, number - 1),
-            remoteHost="127.0.0.1",
-            remotePort=8888,
+            name=default_profile_name(kind, number),
+            localPort=default_local_port(kind, number),
+            remoteHost=default_remote_host(kind),
+            remotePort=default_remote_port(kind),
             jumpUser="",
             jumpHost="",
             jumpPort=22,
             targetUser="",
             targetHost="",
             targetPort=22,
-            jupyterPath="/lab/tree/work",
+            jupyterPath=default_http_path(kind),
             sshPassword="",
             identityFile="",
             compressionEnabled=True,
@@ -134,7 +166,8 @@ class SSHProfile:
 
     @classmethod
     def from_dict(cls, data: dict) -> "SSHProfile":
-        defaults = asdict(cls.sample())
+        kind = str(data.get("workspaceKind") or "jupyter")
+        defaults = asdict(cls.blank(1, kind))
         defaults.update({key: value for key, value in data.items() if key in defaults})
         if not defaults.get("id"):
             defaults["id"] = str(uuid.uuid4())
@@ -142,6 +175,14 @@ class SSHProfile:
 
     def to_dict(self) -> dict:
         return asdict(self)
+
+    @property
+    def is_web_workspace(self) -> bool:
+        return self.workspaceKind in WEB_WORKSPACE_KINDS
+
+    @property
+    def workspace_title(self) -> str:
+        return workspace_title(self.workspaceKind)
 
     @property
     def target_address(self) -> str:
@@ -228,7 +269,7 @@ class SSHProfile:
         return args
 
     def preview_command(self) -> str:
-        args = self.tunnel_ssh_args(False) if self.workspaceKind == "jupyter" else self.terminal_ssh_args(False)
+        args = self.tunnel_ssh_args(False) if self.is_web_workspace else self.terminal_ssh_args(False)
         return subprocess.list2cmdline(["ssh"] + args)
 
 
@@ -470,7 +511,7 @@ class TunnelServer:
     def start(self) -> None:
         if self.thread and self.thread.is_alive():
             return
-        self.thread = threading.Thread(target=self.run, name="JupyterTunnel", daemon=True)
+        self.thread = threading.Thread(target=self.run, name="WebTunnel", daemon=True)
         self.thread.start()
 
     def run(self) -> None:
@@ -712,12 +753,12 @@ class ProfileEditor(tk.Toplevel):
         scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
 
         self.section("基本配置")
-        self.choice("workspaceKind", "工作区", [("Jupyter", "jupyter"), ("终端", "terminal")])
+        self.choice("workspaceKind", "工作区", [("Jupyter", "jupyter"), ("RStudio", "rstudio"), ("终端", "terminal")])
         self.text("name", "名称")
         self.password("sshPassword", "SSH 密码")
         self.text("jupyterPath", "页面路径")
 
-        self.section("Jupyter 本地转发")
+        self.section("网页本地转发")
         self.integer("localPort", "本地端口")
         self.text("remoteHost", "远程主机")
         self.integer("remotePort", "远程端口")
@@ -879,6 +920,9 @@ class App(tk.Tk):
         ttk.Button(controls, text="+ Jupyter", command=lambda: self.add_profile("jupyter")).pack(
             side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 4)
         )
+        ttk.Button(controls, text="+ RStudio", command=lambda: self.add_profile("rstudio")).pack(
+            side=tk.LEFT, fill=tk.X, expand=True, padx=4
+        )
         ttk.Button(controls, text="+ 终端", command=lambda: self.add_profile("terminal")).pack(
             side=tk.LEFT, fill=tk.X, expand=True, padx=4
         )
@@ -903,7 +947,7 @@ class App(tk.Tk):
     def refresh_sidebar(self) -> None:
         selected = self.store.selected_profile_id
         self.profile_tree.delete(*self.profile_tree.get_children())
-        for kind, title in (("jupyter", "Jupyter 工作区"), ("terminal", "终端工作区")):
+        for kind, title in (("jupyter", "Jupyter 工作区"), ("rstudio", "RStudio 工作区"), ("terminal", "终端工作区")):
             parent = f"group:{kind}"
             self.profile_tree.insert("", tk.END, iid=parent, text=title, open=True)
             for profile in self.store.profiles_for(kind):
@@ -917,7 +961,7 @@ class App(tk.Tk):
                 pass
 
     def is_profile_active(self, profile: SSHProfile) -> bool:
-        if profile.workspaceKind == "jupyter":
+        if profile.is_web_workspace:
             return self.tunnel_profile_id == profile.id and self.tunnel_status in {"connecting", "connected"}
         return self.terminal_profile_id == profile.id and self.terminal_status in {"connecting", "connected"}
 
@@ -941,8 +985,8 @@ class App(tk.Tk):
         if profile is None:
             ttk.Label(self.content, text="未选择配置").pack(expand=True)
             return
-        if profile.workspaceKind == "jupyter":
-            self.render_jupyter(profile)
+        if profile.is_web_workspace:
+            self.render_web_workspace(profile)
         else:
             self.render_terminal(profile)
 
@@ -954,12 +998,12 @@ class App(tk.Tk):
         labels = ttk.Frame(header)
         labels.pack(side=tk.LEFT, fill=tk.X, expand=True)
         ttk.Label(labels, text=profile.name, style="Header.TLabel").pack(anchor=tk.W)
-        detail = profile.local_url if profile.workspaceKind == "jupyter" else (profile.target_address or "未填写目标主机")
+        detail = profile.local_url if profile.is_web_workspace else (profile.target_address or "未填写目标主机")
         ttk.Label(labels, text=detail, style="Muted.TLabel").pack(anchor=tk.W)
         ttk.Label(header, text=status_text, style="Status.TLabel").pack(side=tk.RIGHT, padx=(10, 0))
         return header
 
-    def render_jupyter(self, profile: SSHProfile) -> None:
+    def render_web_workspace(self, profile: SSHProfile) -> None:
         status_text = {
             "disconnected": "未连接",
             "connecting": "连接中",
@@ -988,8 +1032,8 @@ class App(tk.Tk):
         body.pack(fill=tk.BOTH, expand=True, padx=12, pady=(0, 12))
 
         browser_frame = ttk.Frame(body, padding=18)
-        body.add(browser_frame, text="Jupyter")
-        ttk.Label(browser_frame, text="Jupyter 地址", font=("Microsoft YaHei UI", 11, "bold")).pack(anchor=tk.W)
+        body.add(browser_frame, text=profile.workspace_title)
+        ttk.Label(browser_frame, text=f"{profile.workspace_title} 地址", font=("Microsoft YaHei UI", 11, "bold")).pack(anchor=tk.W)
         url_entry = ttk.Entry(browser_frame)
         url_entry.insert(0, profile.local_url)
         url_entry.configure(state="readonly")
@@ -999,7 +1043,7 @@ class App(tk.Tk):
         )
         ttk.Label(
             browser_frame,
-            text="Windows 版使用系统默认浏览器显示 Jupyter Lab；隧道由本应用保持。",
+            text=f"Windows 版使用系统默认浏览器显示 {profile.workspace_title}；隧道由本应用保持。",
             style="Muted.TLabel",
         ).pack(anchor=tk.W, pady=(14, 0))
 

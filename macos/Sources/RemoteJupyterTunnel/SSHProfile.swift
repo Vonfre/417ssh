@@ -2,6 +2,7 @@ import Foundation
 
 enum WorkspaceKind: String, Codable, CaseIterable, Identifiable {
     case jupyter
+    case rstudio
     case terminal
 
     var id: String { rawValue }
@@ -10,6 +11,8 @@ enum WorkspaceKind: String, Codable, CaseIterable, Identifiable {
         switch self {
         case .jupyter:
             return "Jupyter"
+        case .rstudio:
+            return "RStudio"
         case .terminal:
             return "终端"
         }
@@ -19,6 +22,8 @@ enum WorkspaceKind: String, Codable, CaseIterable, Identifiable {
         switch self {
         case .jupyter:
             return "Jupyter 工作区"
+        case .rstudio:
+            return "RStudio 工作区"
         case .terminal:
             return "终端工作区"
         }
@@ -28,8 +33,30 @@ enum WorkspaceKind: String, Codable, CaseIterable, Identifiable {
         switch self {
         case .jupyter:
             return "rectangle.connected.to.line.below"
+        case .rstudio:
+            return "display"
         case .terminal:
             return "terminal"
+        }
+    }
+
+    var isWebWorkspace: Bool {
+        switch self {
+        case .jupyter, .rstudio:
+            return true
+        case .terminal:
+            return false
+        }
+    }
+
+    var emptyText: String {
+        switch self {
+        case .jupyter:
+            return "还没有 Jupyter 配置"
+        case .rstudio:
+            return "还没有 RStudio 配置"
+        case .terminal:
+            return "还没有终端配置"
         }
     }
 }
@@ -195,7 +222,7 @@ struct SSHProfile: Identifiable, Codable, Equatable {
 
     var previewCommand: String {
         switch workspaceKind {
-        case .jupyter:
+        case .jupyter, .rstudio:
             return sshArguments(includeBatchMode: false).map { argument in
                 argument.shellQuoted
             }.joined(separator: " ")
@@ -370,16 +397,16 @@ extension SSHProfile {
         SSHProfile(
             workspaceKind: kind,
             name: kind.defaultProfileName(number: number),
-            localPort: 8000 + max(0, number - 1),
-            remoteHost: "127.0.0.1",
-            remotePort: 8888,
+            localPort: kind.defaultLocalPort(number: number),
+            remoteHost: kind.defaultRemoteHost,
+            remotePort: kind.defaultRemotePort,
             jumpUser: "",
             jumpHost: "",
             jumpPort: 22,
             targetUser: "",
             targetHost: "",
             targetPort: 22,
-            jupyterPath: "/lab/tree/work",
+            jupyterPath: kind.defaultHTTPPath,
             compressionEnabled: true,
             verboseLogging: false,
             allowRemoteLocalPortAccess: false,
@@ -396,8 +423,54 @@ private extension WorkspaceKind {
         switch self {
         case .jupyter:
             return number <= 1 ? "新 Jupyter" : "新 Jupyter \(number)"
+        case .rstudio:
+            return number <= 1 ? "新 RStudio" : "新 RStudio \(number)"
         case .terminal:
             return number <= 1 ? "新终端" : "新终端 \(number)"
+        }
+    }
+
+    func defaultLocalPort(number: Int) -> Int {
+        switch self {
+        case .jupyter:
+            return 8000 + max(0, number - 1)
+        case .rstudio:
+            return 8008 + max(0, number - 1)
+        case .terminal:
+            return 8000 + max(0, number - 1)
+        }
+    }
+
+    var defaultRemoteHost: String {
+        switch self {
+        case .jupyter:
+            return "127.0.0.1"
+        case .rstudio:
+            return "localhost"
+        case .terminal:
+            return "127.0.0.1"
+        }
+    }
+
+    var defaultRemotePort: Int {
+        switch self {
+        case .jupyter:
+            return 8888
+        case .rstudio:
+            return 8787
+        case .terminal:
+            return 8888
+        }
+    }
+
+    var defaultHTTPPath: String {
+        switch self {
+        case .jupyter:
+            return "/lab/tree/work"
+        case .rstudio:
+            return "/"
+        case .terminal:
+            return "/lab/tree/work"
         }
     }
 }

@@ -20,8 +20,8 @@ struct ContentView: View {
         } detail: {
             if let profile = store.selectedProfile {
                 switch profile.workspaceKind {
-                case .jupyter:
-                    JupyterWorkspaceView(
+                case .jupyter, .rstudio:
+                    WebWorkspaceView(
                         profileBox: store.binding(for: profile),
                         reloadToken: $reloadToken,
                         onEdit: {
@@ -116,6 +116,18 @@ struct ContentView: View {
                     }
 
                     ProfileSectionView(
+                        title: WorkspaceKind.rstudio.sidebarTitle,
+                        count: store.profiles(for: .rstudio).count,
+                        addHelp: "新增 RStudio 工作区",
+                        onAdd: {
+                            store.addProfile(kind: .rstudio)
+                            editingProfileID = store.selectedProfileID
+                        }
+                    ) {
+                        profileRows(for: .rstudio)
+                    }
+
+                    ProfileSectionView(
                         title: WorkspaceKind.terminal.sidebarTitle,
                         count: store.profiles(for: .terminal).count,
                         addHelp: "新增终端工作区",
@@ -142,6 +154,14 @@ struct ContentView: View {
                     Label("Jupyter", systemImage: "plus.rectangle.on.rectangle")
                 }
                 .help("新增 Jupyter 工作区")
+
+                Button {
+                    store.addProfile(kind: .rstudio)
+                    editingProfileID = store.selectedProfileID
+                } label: {
+                    Label("RStudio", systemImage: "plus.square")
+                }
+                .help("新增 RStudio 工作区")
 
                 Button {
                     store.addProfile(kind: .terminal)
@@ -204,7 +224,7 @@ struct ContentView: View {
     private func profileRows(for kind: WorkspaceKind) -> some View {
         let profiles = store.profiles(for: kind)
         if profiles.isEmpty {
-            Text(kind == .jupyter ? "还没有 Jupyter 配置" : "还没有终端配置")
+            Text(kind.emptyText)
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -230,7 +250,7 @@ struct ContentView: View {
 
     private func isProfileActive(_ profile: SSHProfile) -> Bool {
         switch profile.workspaceKind {
-        case .jupyter:
+        case .jupyter, .rstudio:
             return tunnel.activeProfileID == profile.id && tunnel.status.isRunning
         case .terminal:
             return terminal.activeProfileID == profile.id && terminal.status.isRunning
@@ -410,7 +430,7 @@ private struct ProfileRow: View {
 
     private var subtitle: String {
         switch profile.workspaceKind {
-        case .jupyter:
+        case .jupyter, .rstudio:
             return "\(profile.localPort) -> \(profile.remoteHost):\(profile.remotePort)"
         case .terminal:
             return profile.targetAddress.isEmpty ? "未填写目标主机" : profile.targetAddress
@@ -418,14 +438,14 @@ private struct ProfileRow: View {
     }
 }
 
-private struct JupyterWorkspaceView: View {
+private struct WebWorkspaceView: View {
     @EnvironmentObject private var tunnel: TunnelManager
 
     let profileBox: BindingBox<SSHProfile>
     @Binding var reloadToken: Int
     let onEdit: () -> Void
 
-    @State private var selectedTab = JupyterTab.browser
+    @State private var selectedTab = WebWorkspaceTab.browser
 
     private var currentProfile: SSHProfile {
         profileBox.get()
@@ -570,7 +590,7 @@ private struct JupyterWorkspaceView: View {
         VStack(spacing: 0) {
             HStack(spacing: 12) {
                 Picker("视图", selection: $selectedTab) {
-                    ForEach(JupyterTab.allCases) { tab in
+                    ForEach(WebWorkspaceTab.allCases) { tab in
                         Label(tab.title, systemImage: tab.systemImage)
                             .tag(tab)
                     }
@@ -581,7 +601,7 @@ private struct JupyterWorkspaceView: View {
                 Spacer(minLength: 0)
 
                 StatusDot(
-                    text: isCurrentProfileActive ? "Jupyter 已连接" : "Jupyter 未连接",
+                    text: isCurrentProfileActive ? "\(currentProfile.workspaceKind.title) 已连接" : "\(currentProfile.workspaceKind.title) 未连接",
                     color: isCurrentProfileActive ? .green : .secondary
                 )
             }
@@ -614,13 +634,13 @@ private struct JupyterWorkspaceView: View {
 
     private var browserPane: some View {
         ZStack {
-            JupyterWebView(url: currentProfile.localURL, reloadToken: reloadToken)
+            WebWorkspaceBrowserView(url: currentProfile.localURL, reloadToken: reloadToken)
 
             if !isCurrentProfileActive {
                 EmptyStateView(
                     systemImage: "network.slash",
                     title: "未连接",
-                    subtitle: "连接成功后，这里会显示 Jupyter Lab"
+                    subtitle: "连接成功后，这里会显示 \(currentProfile.workspaceKind.title)"
                 )
             }
         }
@@ -723,8 +743,8 @@ private struct ProfileEditorView: View {
                 labeledTextField("名称", text: profile.name)
                 labeledSecureField("SSH 密码", text: profile.sshPassword)
 
-                if currentProfile.workspaceKind == .jupyter {
-                    SettingRow("Jupyter 地址") {
+                if currentProfile.workspaceKind.isWebWorkspace {
+                    SettingRow("\(currentProfile.workspaceKind.title) 地址") {
                         Text(currentProfile.localURLString)
                             .foregroundStyle(.secondary)
                             .lineLimit(1)
@@ -736,8 +756,8 @@ private struct ProfileEditorView: View {
                 }
             }
 
-            if currentProfile.workspaceKind == .jupyter {
-                SettingsSection(title: "Jupyter 本地转发", systemImage: "arrow.left.arrow.right") {
+            if currentProfile.workspaceKind.isWebWorkspace {
+                SettingsSection(title: "\(currentProfile.workspaceKind.title) 本地转发", systemImage: "arrow.left.arrow.right") {
                     labeledIntField("本地端口", value: profile.localPort)
                     labeledTextField("远程主机", text: profile.remoteHost)
                     labeledIntField("远程端口", value: profile.remotePort)
@@ -806,7 +826,7 @@ private struct ProfileEditorView: View {
     }
 }
 
-private enum JupyterTab: String, CaseIterable, Identifiable {
+private enum WebWorkspaceTab: String, CaseIterable, Identifiable {
     case browser
     case logs
 
@@ -815,7 +835,7 @@ private enum JupyterTab: String, CaseIterable, Identifiable {
     var title: String {
         switch self {
         case .browser:
-            return "Jupyter"
+            return "网页"
         case .logs:
             return "日志"
         }

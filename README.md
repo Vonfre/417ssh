@@ -2,7 +2,7 @@
 
 [![Build Release Packages](https://github.com/Vonfre/417ssh/actions/workflows/release.yml/badge.svg)](https://github.com/Vonfre/417ssh/actions/workflows/release.yml)
 
-`417ssh` 是一个面向 SSH / Jupyter / SFTP 日常工作的桌面工具。它把常用的远程连接、Jupyter 端口转发、终端和文件传输放在同一个界面里，适合经常通过跳板机连接服务器、打开 Jupyter Lab、上传下载文件的工作流。
+`417ssh` 是一个面向 SSH / Jupyter / RStudio Server / SFTP 日常工作的桌面工具。它把常用的远程连接、网页服务端口转发、终端和文件传输放在同一个界面里，适合经常通过跳板机连接服务器、打开 Jupyter Lab 或 RStudio Server、上传下载文件的工作流。
 
 ## 下载
 
@@ -42,9 +42,10 @@ Windows portable 版本不需要安装 Python。配置文件保存在：
 
 ## 功能
 
-- 保存多组 SSH / Jupyter 工作区配置。
+- 保存多组 SSH / Jupyter / RStudio / 终端工作区配置。
 - 支持跳板机、目标主机、端口转发、密码、密钥和 SSH keepalive。
 - 一键建立本地 Jupyter 隧道，并在应用内打开 Jupyter Lab。
+- 一键建立本地 RStudio Server 隧道，并在应用内打开 RStudio 网页。
 - 提供内置终端，也支持打开系统原生终端。
 - 浏览远程目录，上传和下载文件或文件夹。
 - 从 GitHub Releases 检查更新，并可直接下载、安装、重启到新版。

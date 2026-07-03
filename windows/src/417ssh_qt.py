@@ -72,7 +72,7 @@ def app_version() -> str:
         text = version_file.read_text(encoding="utf-8").strip()
         if text:
             return text
-    return "0.2.11"
+    return "0.2.12"
 
 
 CURRENT_VERSION = app_version()
@@ -415,7 +415,8 @@ class ProfileRow(QFrame):
         layout.setContentsMargins(9, 8, 8, 8)
         layout.setSpacing(8)
 
-        icon = QLabel("J" if profile.workspaceKind == "jupyter" else ">_")
+        icon_text = "R" if profile.workspaceKind == "rstudio" else ("J" if profile.workspaceKind == "jupyter" else ">_")
+        icon = QLabel(icon_text)
         icon.setFixedSize(30, 30)
         icon.setAlignment(Qt.AlignCenter)
         icon.setStyleSheet(
@@ -432,7 +433,7 @@ class ProfileRow(QFrame):
         title.setWordWrap(False)
         subtitle_text = (
             f"{profile.localPort} -> {profile.remoteHost}:{profile.remotePort}"
-            if profile.workspaceKind == "jupyter"
+            if profile.is_web_workspace
             else (profile.target_address or "未填写目标主机")
         )
         subtitle = QLabel(subtitle_text)
@@ -512,12 +513,12 @@ class ProfileEditor(QDialog):
         root.addWidget(scroll, 1)
 
         self.add_section("基本配置")
-        self.add_combo("workspaceKind", "工作区", [("Jupyter", "jupyter"), ("终端", "terminal")])
+        self.add_combo("workspaceKind", "工作区", [("Jupyter", "jupyter"), ("RStudio", "rstudio"), ("终端", "terminal")])
         self.add_line("name", "名称")
         self.add_line("sshPassword", "SSH 密码", password=True)
         self.add_line("jupyterPath", "页面路径")
 
-        self.add_section("Jupyter 本地转发")
+        self.add_section("网页本地转发")
         self.add_spin("localPort", "本地端口", 1, 65535)
         self.add_line("remoteHost", "远程主机")
         self.add_spin("remotePort", "远程端口", 1, 65535)
@@ -855,6 +856,7 @@ class MainWindow(QMainWindow):
         bottom.setSpacing(6)
         for text, callback in (
             ("Jupyter", lambda: self.add_profile("jupyter")),
+            ("RStudio", lambda: self.add_profile("rstudio")),
             ("终端", lambda: self.add_profile("terminal")),
             ("复制", self.duplicate_profile),
             ("删除", self.delete_profile),
@@ -889,7 +891,7 @@ class MainWindow(QMainWindow):
             """
         )
 
-    def section_widget(self, title: str, profiles: list[SSHProfile]) -> QWidget:
+    def section_widget(self, title: str, profiles: list[SSHProfile], kind: str) -> QWidget:
         section = QWidget()
         layout = QVBoxLayout(section)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -902,7 +904,6 @@ class MainWindow(QMainWindow):
         add = QToolButton()
         add.setText("+")
         add.setToolTip("新增配置")
-        kind = "jupyter" if "Jupyter" in title else "terminal"
         add.clicked.connect(lambda: self.add_profile(kind))
         header.addWidget(add)
         layout.addLayout(header)
@@ -921,12 +922,13 @@ class MainWindow(QMainWindow):
 
     def refresh_sidebar(self) -> None:
         clear_layout(self.profile_layout)
-        self.profile_layout.addWidget(self.section_widget("Jupyter 工作区", self.store.profiles_for("jupyter")))
-        self.profile_layout.addWidget(self.section_widget("终端工作区", self.store.profiles_for("terminal")))
+        self.profile_layout.addWidget(self.section_widget("Jupyter 工作区", self.store.profiles_for("jupyter"), "jupyter"))
+        self.profile_layout.addWidget(self.section_widget("RStudio 工作区", self.store.profiles_for("rstudio"), "rstudio"))
+        self.profile_layout.addWidget(self.section_widget("终端工作区", self.store.profiles_for("terminal"), "terminal"))
         self.profile_layout.addStretch(1)
 
     def is_profile_active(self, profile: SSHProfile) -> bool:
-        if profile.workspaceKind == "jupyter":
+        if profile.is_web_workspace:
             return self.tunnel_profile_id == profile.id and self.tunnel_status in {"connecting", "connected"}
         return self.terminal_profile_id == profile.id and self.terminal_status in {"connecting", "connected"}
 
@@ -947,8 +949,8 @@ class MainWindow(QMainWindow):
             empty.setAlignment(Qt.AlignCenter)
             self.detail_layout.addWidget(empty)
             return
-        if profile.workspaceKind == "jupyter":
-            self.render_jupyter(profile)
+        if profile.is_web_workspace:
+            self.render_web_workspace(profile)
         else:
             self.render_terminal(profile)
 
@@ -967,7 +969,7 @@ class MainWindow(QMainWindow):
         top.addWidget(name)
         top.addWidget(StatusPill(status_text, color))
         top.addStretch(1)
-        detail = QLabel(profile.local_url if profile.workspaceKind == "jupyter" else (profile.target_address or "未填写目标主机"))
+        detail = QLabel(profile.local_url if profile.is_web_workspace else (profile.target_address or "未填写目标主机"))
         detail.setStyleSheet("color: #6b7280;")
         title_box.addLayout(top)
         title_box.addWidget(detail)
@@ -980,7 +982,7 @@ class MainWindow(QMainWindow):
         button.style().polish(button)
         return button
 
-    def render_jupyter(self, profile: SSHProfile) -> None:
+    def render_web_workspace(self, profile: SSHProfile) -> None:
         status_text = {
             "disconnected": "未连接",
             "connecting": "连接中",
@@ -995,14 +997,17 @@ class MainWindow(QMainWindow):
         layout.setSpacing(10)
 
         controls = QHBoxLayout()
-        tabs_label = StatusPill("Jupyter 已连接" if self.is_profile_active(profile) else "Jupyter 未连接", "#1f9d55" if self.is_profile_active(profile) else "#6b7280")
+        tabs_label = StatusPill(
+            f"{profile.workspace_title} 已连接" if self.is_profile_active(profile) else f"{profile.workspace_title} 未连接",
+            "#1f9d55" if self.is_profile_active(profile) else "#6b7280",
+        )
         controls.addWidget(tabs_label)
         controls.addStretch(1)
         config = QPushButton("配置")
         config.clicked.connect(lambda: self.edit_profile(profile))
         controls.addWidget(config)
         reload_button = QPushButton("刷新")
-        reload_button.clicked.connect(lambda: self.load_jupyter_url(profile))
+        reload_button.clicked.connect(lambda: self.load_web_url(profile))
         reload_button.setEnabled(self.tunnel_profile_id == profile.id and self.tunnel_status == "connected")
         controls.addWidget(reload_button)
         connect = QPushButton("断开" if self.is_profile_active(profile) else "连接")
@@ -1017,9 +1022,9 @@ class MainWindow(QMainWindow):
         if QWebEngineView is not None and self.tunnel_profile_id == profile.id and self.tunnel_status == "connected":
             self.current_webview = QWebEngineView()
             browser_layout.addWidget(self.current_webview, 1)
-            self.load_jupyter_url(profile)
+            self.load_web_url(profile)
         elif QWebEngineView is not None:
-            placeholder = QLabel("连接成功后，这里会显示 Jupyter Lab")
+            placeholder = QLabel(f"连接成功后，这里会显示 {profile.workspace_title}")
             placeholder.setAlignment(Qt.AlignCenter)
             placeholder.setStyleSheet("color: #6b7280; background: white; border-radius: 8px;")
             browser_layout.addWidget(placeholder, 1)
@@ -1027,14 +1032,14 @@ class MainWindow(QMainWindow):
             fallback = QFrame()
             fallback_layout = QVBoxLayout(fallback)
             fallback_layout.setAlignment(Qt.AlignCenter)
-            message = QLabel("未安装 Qt WebEngine，Jupyter 将使用系统默认浏览器打开。")
+            message = QLabel(f"未安装 Qt WebEngine，{profile.workspace_title} 将使用系统默认浏览器打开。")
             message.setStyleSheet("color: #6b7280;")
             open_button = QPushButton("打开浏览器")
             open_button.clicked.connect(lambda: webbrowser.open(profile.local_url))
             fallback_layout.addWidget(message)
             fallback_layout.addWidget(open_button, 0, Qt.AlignCenter)
             browser_layout.addWidget(fallback, 1)
-        tabs.addTab(browser, "Jupyter")
+        tabs.addTab(browser, profile.workspace_title)
 
         log = QPlainTextEdit()
         log.setReadOnly(True)
@@ -1082,13 +1087,13 @@ class MainWindow(QMainWindow):
                 if QWebEngineView is None:
                     webbrowser.open(active.local_url)
                 else:
-                    QTimer.singleShot(100, lambda: self.load_jupyter_url(active))
+                    QTimer.singleShot(100, lambda: self.load_web_url(active))
         if status == "failed":
             self.tunnel_profile_id = None
         self.refresh_sidebar()
         self.render_selected_profile()
 
-    def load_jupyter_url(self, profile: SSHProfile) -> None:
+    def load_web_url(self, profile: SSHProfile) -> None:
         if self.current_webview is not None:
             self.current_webview.load(QUrl(profile.local_url))
         elif QWebEngineView is None:
