@@ -32,6 +32,8 @@ final class ProfileStore: ObservableObject {
         } else {
             selectedProfileID = profiles.first?.id
         }
+
+        normalizeBuiltInSFTPWorkspaceName()
     }
 
     var selectedProfile: SSHProfile? {
@@ -141,6 +143,27 @@ final class ProfileStore: ObservableObject {
         }
 
         return candidate
+    }
+
+    private func normalizeBuiltInSFTPWorkspaceName() {
+        guard
+            let index = profiles.firstIndex(where: { $0.workspaceKind == .sftp }),
+            profiles[index].name == "新 SFTP" || profiles[index].name.hasPrefix("新 SFTP ")
+        else {
+            return
+        }
+
+        var existingNames = Set(profiles.map(\.name))
+        existingNames.remove(profiles[index].name)
+        var candidate = "SFTP"
+        var suffix = 2
+        while existingNames.contains(candidate) {
+            candidate = "SFTP \(suffix)"
+            suffix += 1
+        }
+
+        profiles[index].name = candidate
+        save()
     }
 
     private func save() {

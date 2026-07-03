@@ -63,7 +63,7 @@ def default_profile_name(kind: str, number: int) -> str:
     if kind == "terminal":
         return "新终端" if number <= 1 else f"新终端 {number}"
     if kind == "sftp":
-        return "新 SFTP" if number <= 1 else f"新 SFTP {number}"
+        return "SFTP" if number <= 1 else f"SFTP {number}"
     return f"新 {title}" if number <= 1 else f"新 {title} {number}"
 
 
@@ -300,6 +300,7 @@ class ProfileStore:
     def __init__(self) -> None:
         self.profiles: list[SSHProfile] = self.load()
         self.selected_profile_id = self.profiles[0].id if self.profiles else None
+        self.normalize_builtin_sftp_name()
 
     def load(self) -> list[SSHProfile]:
         if not PROFILES_FILE.exists():
@@ -395,6 +396,20 @@ class ProfileStore:
             candidate = f"{base} {suffix}"
             suffix += 1
         return candidate
+
+    def normalize_builtin_sftp_name(self) -> None:
+        for profile in self.profiles:
+            if profile.workspaceKind == "sftp":
+                if profile.name == "新 SFTP" or profile.name.startswith("新 SFTP "):
+                    names = {item.name for item in self.profiles if item.id != profile.id}
+                    candidate = "SFTP"
+                    suffix = 2
+                    while candidate in names:
+                        candidate = f"SFTP {suffix}"
+                        suffix += 1
+                    profile.name = candidate
+                    self.save()
+                return
 
 
 class SSHConnection:

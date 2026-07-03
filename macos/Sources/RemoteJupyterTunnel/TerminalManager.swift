@@ -39,21 +39,31 @@ final class TerminalManager: ObservableObject {
     @Published private(set) var status: Status = .disconnected
     @Published private(set) var activeProfileID: UUID?
     @Published private(set) var terminalTitle = "SSH 终端"
+    @Published private(set) var statusByProfileID: [UUID: Status] = [:]
+    @Published private(set) var terminalTitleByProfileID: [UUID: String] = [:]
+    @Published private(set) var currentDirectoryByProfileID: [UUID: String] = [:]
 
-    private var session: RemoteTerminalSession?
-    private var isDisconnecting = false
+    private var sessions: [UUID: RemoteTerminalSession] = [:]
+    private var disconnectingProfileIDs: Set<UUID> = []
 
     func connect(profile: SSHProfile) {
-        disconnect()
-
-        guard !profile.targetHost.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            status = .failed("目标主机为空")
+        if status(for: profile.id).isRunning, sessions[profile.id] != nil {
+            activeProfileID = profile.id
+            status = status(for: profile.id)
+            terminalTitle = title(for: profile.id)
             return
         }
 
-        status = .connecting
+        disconnect(profileID: profile.id, updateLegacySelection: false)
+
+        guard !profile.targetHost.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            setStatus(.failed("目标主机为空"), for: profile.id)
+            return
+        }
+
         activeProfileID = profile.id
-        terminalTitle = profile.targetAddress.isEmpty ? "SSH 终端" : profile.targetAddress
+        setTitle(profile.targetAddress.isEmpty ? "SSH 终端" : profile.targetAddress, for: profile.id)
+        setStatus(.connecting, for: profile.id)
 
         do {
             let terminalView = RemotePTYTerminalView(frame: .zero)
@@ -63,8 +73,18 @@ final class TerminalManager: ObservableObject {
                 profileID: profile.id,
                 onTitle: { [weak self] title in
                     Task { @MainActor in
-                        guard let self, self.activeProfileID == profile.id else { return }
-                        self.terminalTitle = title.isEmpty ? profile.targetAddress : title
+                        guard let self, self.sessions[profile.id] != nil else { return }
+                        self.setTitle(title.isEmpty ? profile.targetAddress : title, for: profile.id)
+                    }
+                },
+                onDirectory: { [weak self] directory in
+                    Task { @MainActor in
+                        guard let self, self.sessions[profile.id] != nil else { return }
+                        if let normalized = Self.normalizedTerminalDirectory(directory) {
+                            self.currentDirectoryByProfileID[profile.id] = normalized
+                        } else {
+                            self.currentDirectoryByProfileID.removeValue(forKey: profile.id)
+                        }
                     }
                 },
                 onTerminate: { [weak self] exitCode in
@@ -76,7 +96,7 @@ final class TerminalManager: ObservableObject {
             terminalView.processDelegate = delegate
 
             let launch = try launchConfiguration(for: profile)
-            session = RemoteTerminalSession(
+            sessions[profile.id] = RemoteTerminalSession(
                 profileID: profile.id,
                 view: terminalView,
                 delegate: delegate,
@@ -90,66 +110,118 @@ final class TerminalManager: ObservableObject {
                 execName: launch.execName
             )
             terminalView.window?.makeFirstResponder(terminalView)
-            status = .connected
+            setStatus(.connected, for: profile.id)
         } catch {
-            cleanupSession(removeView: true)
-            status = .failed(error.localizedDescription)
-            activeProfileID = nil
+            cleanupSession(profileID: profile.id, removeView: true)
+            setStatus(.failed(error.localizedDescription), for: profile.id)
+            refreshLegacySelectionAfterProfileRemoval(profile.id)
         }
     }
 
     func disconnect() {
-        guard let session else {
-            status = .disconnected
-            activeProfileID = nil
-            terminalTitle = "SSH 终端"
+        for profileID in Array(sessions.keys) {
+            disconnect(profileID: profileID, updateLegacySelection: false)
+        }
+
+        statusByProfileID.removeAll()
+        terminalTitleByProfileID.removeAll()
+        currentDirectoryByProfileID.removeAll()
+        activeProfileID = nil
+        status = .disconnected
+        terminalTitle = "SSH 终端"
+    }
+
+    func disconnect(profileID: UUID, updateLegacySelection: Bool = true) {
+        guard let session = sessions[profileID] else {
+            setStatus(.disconnected, for: profileID)
+            if updateLegacySelection {
+                refreshLegacySelectionAfterProfileRemoval(profileID)
+            }
             return
         }
 
-        isDisconnecting = true
+        disconnectingProfileIDs.insert(profileID)
         session.view.terminate()
-        cleanupSession(removeView: true)
-        isDisconnecting = false
-        status = .disconnected
-        activeProfileID = nil
-        terminalTitle = "SSH 终端"
+        cleanupSession(profileID: profileID, removeView: true)
+        disconnectingProfileIDs.remove(profileID)
+        currentDirectoryByProfileID.removeValue(forKey: profileID)
+        setStatus(.disconnected, for: profileID)
+        if updateLegacySelection {
+            refreshLegacySelectionAfterProfileRemoval(profileID)
+        }
     }
 
     func clear() {
-        session?.view.clearDisplay()
+        guard let activeProfileID else { return }
+        clear(profileID: activeProfileID)
+    }
+
+    func clear(profileID: UUID) {
+        sessions[profileID]?.view.clearDisplay()
     }
 
     func sendControlC() {
-        session?.view.sendBytes([3])
+        guard let activeProfileID else { return }
+        sendControlC(profileID: activeProfileID)
+    }
+
+    func sendControlC(profileID: UUID) {
+        sessions[profileID]?.view.sendBytes([3])
+    }
+
+    func sendText(_ text: String, profileID: UUID) {
+        sessions[profileID]?.view.sendBytes(Array(text.utf8))
+    }
+
+    func requestCurrentDirectory(profileID: UUID) {
+        let command = " printf '\\033]7;file://%s%s\\007' \"${HOSTNAME:-remote}\" \"$PWD\"\r"
+        sendText(command, profileID: profileID)
     }
 
     func view(for profileID: UUID) -> RemotePTYTerminalView? {
-        guard session?.profileID == profileID else { return nil }
-        return session?.view
+        sessions[profileID]?.view
+    }
+
+    func status(for profileID: UUID) -> Status {
+        statusByProfileID[profileID] ?? .disconnected
+    }
+
+    func isRunning(_ profileID: UUID) -> Bool {
+        status(for: profileID).isRunning
+    }
+
+    func title(for profileID: UUID) -> String {
+        terminalTitleByProfileID[profileID] ?? "SSH 终端"
+    }
+
+    func currentDirectory(for profileID: UUID) -> String? {
+        currentDirectoryByProfileID[profileID]
     }
 
     private func handleTermination(profileID: UUID, exitCode: Int32?) {
-        guard session?.profileID == profileID else { return }
+        guard sessions[profileID] != nil else { return }
 
-        cleanupSession(removeView: true)
-        activeProfileID = nil
-        terminalTitle = "SSH 终端"
+        cleanupSession(profileID: profileID, removeView: true)
+        currentDirectoryByProfileID.removeValue(forKey: profileID)
 
-        if isDisconnecting {
-            status = .disconnected
+        if disconnectingProfileIDs.contains(profileID) {
+            setStatus(.disconnected, for: profileID)
+            refreshLegacySelectionAfterProfileRemoval(profileID)
             return
         }
 
         let normalizedExitCode = exitCode.map(normalizedExitStatus)
         if normalizedExitCode == 0 {
-            status = .disconnected
+            setStatus(.disconnected, for: profileID)
         } else {
             let codeText = normalizedExitCode.map(String.init) ?? "未知"
-            status = .failed("终端已退出，状态码：\(codeText)")
+            setStatus(.failed("终端已退出，状态码：\(codeText)"), for: profileID)
         }
+        refreshLegacySelectionAfterProfileRemoval(profileID)
     }
 
-    private func cleanupSession(removeView: Bool) {
+    private func cleanupSession(profileID: UUID, removeView: Bool) {
+        let session = sessions[profileID]
         if removeView {
             session?.view.removeFromSuperview()
         }
@@ -158,7 +230,48 @@ final class TerminalManager: ObservableObject {
             try? FileManager.default.removeItem(at: expectScriptURL)
         }
 
-        session = nil
+        sessions.removeValue(forKey: profileID)
+    }
+
+    private func setStatus(_ nextStatus: Status, for profileID: UUID) {
+        statusByProfileID[profileID] = nextStatus
+        if activeProfileID == profileID {
+            status = nextStatus
+        }
+    }
+
+    private func setTitle(_ title: String, for profileID: UUID) {
+        terminalTitleByProfileID[profileID] = title
+        if activeProfileID == profileID {
+            terminalTitle = title
+        }
+    }
+
+    private func refreshLegacySelectionAfterProfileRemoval(_ removedProfileID: UUID) {
+        if activeProfileID == removedProfileID {
+            activeProfileID = sessions.keys.first
+        }
+
+        if let activeProfileID {
+            status = status(for: activeProfileID)
+            terminalTitle = title(for: activeProfileID)
+        } else {
+            status = .disconnected
+            terminalTitle = "SSH 终端"
+        }
+    }
+
+    private static func normalizedTerminalDirectory(_ directory: String?) -> String? {
+        guard let directory, !directory.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return nil
+        }
+
+        if let url = URL(string: directory), url.scheme == "file" {
+            let path = url.path.removingPercentEncoding ?? url.path
+            return path.isEmpty ? nil : path
+        }
+
+        return directory
     }
 
     private func launchConfiguration(for profile: SSHProfile) throws -> RemoteTerminalLaunchConfiguration {
@@ -333,15 +446,18 @@ final class RemotePTYTerminalView: LocalProcessTerminalView {
 private final class RemotePTYTerminalDelegate: LocalProcessTerminalViewDelegate {
     let profileID: UUID
     private let onTitle: (String) -> Void
+    private let onDirectory: (String?) -> Void
     private let onTerminate: (Int32?) -> Void
 
     init(
         profileID: UUID,
         onTitle: @escaping (String) -> Void,
+        onDirectory: @escaping (String?) -> Void,
         onTerminate: @escaping (Int32?) -> Void
     ) {
         self.profileID = profileID
         self.onTitle = onTitle
+        self.onDirectory = onDirectory
         self.onTerminate = onTerminate
     }
 
@@ -351,7 +467,9 @@ private final class RemotePTYTerminalDelegate: LocalProcessTerminalViewDelegate 
         onTitle(title)
     }
 
-    func hostCurrentDirectoryUpdate(source: TerminalView, directory: String?) {}
+    func hostCurrentDirectoryUpdate(source: TerminalView, directory: String?) {
+        onDirectory(directory)
+    }
 
     func processTerminated(source: TerminalView, exitCode: Int32?) {
         onTerminate(exitCode)

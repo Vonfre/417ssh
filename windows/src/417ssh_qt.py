@@ -4,6 +4,7 @@ import importlib.util
 import json
 import os
 import posixpath
+import re
 import shutil
 import shlex
 import stat
@@ -13,6 +14,7 @@ import tempfile
 import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 import webbrowser
 import zipfile
@@ -77,7 +79,7 @@ def app_version() -> str:
         text = version_file.read_text(encoding="utf-8").strip()
         if text:
             return text
-    return "0.3.9"
+    return "0.4.0"
 
 
 CURRENT_VERSION = app_version()
@@ -534,9 +536,9 @@ class Bridge(QObject):
     tunnel_status = Signal(str, object)
     terminal_output = Signal(str)
     terminal_status = Signal(str, object)
-    sftp_done = Signal(list, str)
-    sftp_error = Signal(str)
-    sftp_status = Signal(str)
+    sftp_done = Signal(str, list, str)
+    sftp_error = Signal(str, str)
+    sftp_status = Signal(str, str)
     update_done = Signal(dict, object)
     update_error = Signal(str)
     update_downloaded = Signal(str)
@@ -2080,9 +2082,15 @@ class MainWindow(QMainWindow):
         self.sftp_locks: dict[str, threading.RLock] = {}
         self.sftp_connection_guard = threading.RLock()
         self.file_sidebar_visible = False
+        self.file_sidebar_visible_profile_ids: set[str] = set()
+        self.terminal_file_states_by_profile: dict[str, SFTPPaneState] = {}
+        self.current_file_pane_profile_id: str | None = None
         self.directory_cache: dict[tuple[str, str], tuple[list[RemoteFileEntry], str]] = {}
         self.sftp_workspace_tabs_by_profile: dict[str, list[SFTPPairTabState]] = {}
         self.sftp_workspace_selected_tab_by_profile: dict[str, int] = {}
+        self.terminal_directories_by_profile: dict[str, str] = {}
+        self.auto_sync_terminal_directory_profile_ids: set[str] = set()
+        self.pending_terminal_directory_sync_profile_ids: set[str] = set()
 
         self.setWindowTitle(APP_NAME)
         self.resize(1180, 760)
@@ -2238,6 +2246,7 @@ class MainWindow(QMainWindow):
         return self.terminal_profile_id == profile.id and self.terminal_status in {"connecting", "connected"}
 
     def select_profile(self, profile_id: str) -> None:
+        self.save_current_terminal_file_state()
         self.store.selected_profile_id = profile_id
         self.refresh_sidebar()
         self.render_selected_profile()
@@ -2246,17 +2255,21 @@ class MainWindow(QMainWindow):
         return self.store.selected()
 
     def render_selected_profile(self) -> None:
+        self.save_current_terminal_file_state()
         clear_layout(self.detail_layout)
         self.current_webview = None
         profile = self.selected_profile()
         if profile is None:
+            self.current_file_pane_profile_id = None
             empty = QLabel("未选择配置")
             empty.setAlignment(Qt.AlignCenter)
             self.detail_layout.addWidget(empty)
             return
         if profile.is_web_workspace:
+            self.current_file_pane_profile_id = None
             self.render_web_workspace(profile)
         elif profile.workspaceKind == "sftp":
+            self.current_file_pane_profile_id = None
             self.render_sftp_workspace(profile)
         else:
             self.render_terminal(profile)
@@ -2469,14 +2482,19 @@ class MainWindow(QMainWindow):
         layout.addWidget(tabs, 1)
         self.detail_layout.addWidget(container, 1)
 
-    def sftp_source_profiles(self) -> list[SSHProfile]:
-        return [profile for profile in self.store.profiles if profile.workspaceKind in {"terminal", "sftp"}]
+    def sftp_source_profiles(self, exclude_profile_id: str | None = None) -> list[SSHProfile]:
+        return [
+            profile
+            for profile in self.store.profiles
+            if profile.workspaceKind == "terminal"
+            or (profile.workspaceKind == "sftp" and profile.id != exclude_profile_id)
+        ]
 
     def ensure_sftp_workspace_tabs(self, profile: SSHProfile) -> list[SFTPPairTabState]:
         states = self.sftp_workspace_tabs_by_profile.get(profile.id)
         if not states:
             states = [SFTPPairTabState.first()]
-        source_ids = {item.id for item in self.sftp_source_profiles()}
+        source_ids = {item.id for item in self.sftp_source_profiles(exclude_profile_id=profile.id)}
         normalized: list[SFTPPairTabState] = []
         for index, state in enumerate(states):
             if isinstance(state, SFTPPairTabState):
@@ -2566,7 +2584,7 @@ class MainWindow(QMainWindow):
         grid.setSpacing(14)
 
         sources = [("local", None, "127.0.0.1", "本地主机")]
-        for source in self.sftp_source_profiles():
+        for source in self.sftp_source_profiles(exclude_profile_id=workspace_profile.id):
             subtitle = source.target_address or "未填写目标主机"
             sources.append(("remote", source.id, source.name, subtitle))
 
@@ -2618,6 +2636,19 @@ class MainWindow(QMainWindow):
                 delete_button.clicked.connect(lambda _checked=False, selected_profile=source_profile: self.delete_custom_sftp_source(workspace_profile, selected_profile))
                 actions.addWidget(delete_button)
                 card_layout.addLayout(actions)
+            card.setCursor(Qt.PointingHandCursor)
+            card.mousePressEvent = (
+                lambda event,
+                selected_kind=kind,
+                selected_profile_id=profile_id,
+                selected_name=name: self.select_sftp_tab_source(
+                    workspace_profile,
+                    state,
+                    selected_kind,
+                    selected_profile_id,
+                    selected_name,
+                )
+            )
             grid.addWidget(card, index // 2, index % 2)
 
         grid.setColumnStretch(0, 1)
@@ -2708,13 +2739,15 @@ class MainWindow(QMainWindow):
         return f"{state.title}  A:{state.left.title}  B:{state.right.title}"
 
     def render_terminal(self, profile: SSHProfile) -> None:
+        self.load_terminal_file_state(profile)
+        terminal_status = self.terminal_status if self.terminal_profile_id == profile.id else "disconnected"
         status_text = {
             "disconnected": "终端未连接",
             "connecting": "终端连接中",
             "connected": "终端已连接",
             "failed": "终端失败",
-        }.get(self.terminal_status, "终端未连接")
-        self.detail_layout.addWidget(self.header(profile, status_text, status_color(self.terminal_status)))
+        }.get(terminal_status, "终端未连接")
+        self.detail_layout.addWidget(self.header(profile, status_text, status_color(terminal_status)))
 
         container = QWidget()
         layout = QVBoxLayout(container)
@@ -2725,10 +2758,11 @@ class MainWindow(QMainWindow):
         config = QPushButton("配置")
         config.clicked.connect(lambda: self.edit_profile(profile))
         controls.addWidget(config)
-        file_toggle = QPushButton("隐藏文件" if self.file_sidebar_visible else "文件")
+        file_sidebar_visible = self.is_file_sidebar_visible(profile)
+        file_toggle = QPushButton("隐藏文件" if file_sidebar_visible else "文件")
         file_toggle.clicked.connect(lambda: self.toggle_file_sidebar(profile))
         controls.addWidget(file_toggle)
-        if self.file_sidebar_visible:
+        if file_sidebar_visible:
             refresh_files = QPushButton("刷新文件")
             refresh_files.clicked.connect(lambda: self.refresh_files(profile))
             controls.addWidget(refresh_files)
@@ -2745,19 +2779,54 @@ class MainWindow(QMainWindow):
         splitter.setChildrenCollapsible(False)
         splitter.addWidget(self.terminal_pane(profile))
         splitter.setStretchFactor(0, 1)
-        if self.file_sidebar_visible:
+        if file_sidebar_visible:
             splitter.addWidget(self.file_pane(profile))
             splitter.setStretchFactor(1, 1)
+        else:
+            self.current_file_pane_profile_id = None
         layout.addWidget(splitter, 1)
         self.detail_layout.addWidget(container, 1)
 
     def toggle_file_sidebar(self, profile: SSHProfile) -> None:
-        self.file_sidebar_visible = not self.file_sidebar_visible
+        self.save_current_terminal_file_state()
+        if profile.id in self.file_sidebar_visible_profile_ids:
+            self.file_sidebar_visible_profile_ids.remove(profile.id)
+        else:
+            self.file_sidebar_visible_profile_ids.add(profile.id)
         self.render_selected_profile()
-        if self.file_sidebar_visible:
+        if self.is_file_sidebar_visible(profile):
             self.refresh_files(profile)
 
+    def is_file_sidebar_visible(self, profile: SSHProfile) -> bool:
+        return profile.id in self.file_sidebar_visible_profile_ids
+
+    def terminal_file_state(self, profile_id: str) -> SFTPPaneState:
+        state = self.terminal_file_states_by_profile.get(profile_id)
+        if state is None:
+            state = SFTPPaneState(profile_id)
+            self.terminal_file_states_by_profile[profile_id] = state
+        return state
+
+    def save_current_terminal_file_state(self) -> None:
+        profile_id = self.current_file_pane_profile_id
+        if not profile_id:
+            return
+        state = self.terminal_file_state(profile_id)
+        state.status = self.sftp_status
+        state.current_path = self.current_remote_path
+        state.entries = list(self.remote_entries)
+        filter_input = getattr(self, "filter_input", None)
+        if filter_input is not None:
+            state.filter_text = filter_input.text()
+
+    def load_terminal_file_state(self, profile: SSHProfile) -> None:
+        state = self.terminal_file_state(profile.id)
+        self.sftp_status = state.status
+        self.current_remote_path = state.current_path
+        self.remote_entries = list(state.entries)
+
     def terminal_pane(self, profile: SSHProfile) -> QWidget:
+        active = self.is_profile_active(profile)
         pane = QFrame()
         pane.setStyleSheet("QFrame { background: white; border: 1px solid #d1d8d6; border-radius: 8px; }")
         layout = QVBoxLayout(pane)
@@ -2768,18 +2837,20 @@ class MainWindow(QMainWindow):
         title = QLabel("SSH 终端")
         title.setStyleSheet("font-weight: 700;")
         top.addWidget(title)
-        top.addWidget(StatusPill("可直接输入" if self.is_profile_active(profile) else "未连接", "#1f9d55" if self.is_profile_active(profile) else "#6b7280"))
+        top.addWidget(StatusPill("可直接输入" if active else "未连接", "#1f9d55" if active else "#6b7280"))
         top.addStretch(1)
         clear = QPushButton("清空")
         clear.clicked.connect(self.clear_terminal)
+        clear.setEnabled(active)
         top.addWidget(clear)
         ctrl_c = QPushButton("中断")
         ctrl_c.clicked.connect(lambda: self.send_terminal_text("\x03"))
+        ctrl_c.setEnabled(active)
         top.addWidget(ctrl_c)
         layout.addLayout(top)
 
         self.terminal_widget = QPlainTextEdit()
-        self.terminal_widget.setPlainText(self.terminal_text)
+        self.terminal_widget.setPlainText(self.terminal_text if active else "")
         self.terminal_widget.setFont(QFont("Consolas", 10))
         self.terminal_widget.setStyleSheet("background: #101418; color: #e4e8ec; border-radius: 6px;")
         self.terminal_widget.moveCursor(QTextCursor.End)
@@ -2789,14 +2860,18 @@ class MainWindow(QMainWindow):
         self.command_input = QLineEdit()
         self.command_input.setPlaceholderText("输入命令后回车")
         self.command_input.returnPressed.connect(self.send_command_line)
+        self.command_input.setEnabled(active)
         command_row.addWidget(self.command_input, 1)
         send = QPushButton("发送")
         send.clicked.connect(self.send_command_line)
+        send.setEnabled(active)
         command_row.addWidget(send)
         layout.addLayout(command_row)
         return pane
 
     def file_pane(self, profile: SSHProfile) -> QWidget:
+        self.current_file_pane_profile_id = profile.id
+        state = self.terminal_file_state(profile.id)
         pane = QFrame()
         pane.setStyleSheet("QFrame { background: white; border: 1px solid #d1d8d6; border-radius: 8px; }")
         layout = QVBoxLayout(pane)
@@ -2812,7 +2887,8 @@ class MainWindow(QMainWindow):
         top.addStretch(1)
         self.filter_input = QLineEdit()
         self.filter_input.setPlaceholderText("筛选")
-        self.filter_input.textChanged.connect(self.populate_file_tree)
+        self.filter_input.setText(state.filter_text)
+        self.filter_input.textChanged.connect(lambda _text, selected_profile=profile: self.populate_file_tree(selected_profile.id))
         self.filter_input.setMaximumWidth(160)
         top.addWidget(self.filter_input)
         menu_button = QToolButton()
@@ -2847,6 +2923,28 @@ class MainWindow(QMainWindow):
         path_row.addWidget(open_path)
         layout.addLayout(path_row)
 
+        terminal_sync_row = QHBoxLayout()
+        terminal_sync_row.setSpacing(6)
+        copy_path = QToolButton()
+        copy_path.setText("路径到终端")
+        copy_path.setToolTip("将当前 SFTP 目录路径复制到终端")
+        copy_path.clicked.connect(lambda _checked=False, selected_profile=profile: self.copy_sftp_path_to_terminal(selected_profile))
+        terminal_sync_row.addWidget(copy_path)
+        sync_path = QToolButton()
+        sync_path.setText("同步终端目录")
+        sync_path.setToolTip("同步到终端当前文件夹")
+        sync_path.clicked.connect(lambda _checked=False, selected_profile=profile: self.sync_sftp_to_terminal_directory(selected_profile))
+        terminal_sync_row.addWidget(sync_path)
+        auto_sync = QToolButton()
+        auto_sync.setText("自动同步")
+        auto_sync.setCheckable(True)
+        auto_sync.setChecked(profile.id in self.auto_sync_terminal_directory_profile_ids)
+        auto_sync.setToolTip("自动同步终端文件夹")
+        auto_sync.clicked.connect(lambda _checked=False, selected_profile=profile: self.toggle_auto_sync_terminal_directory(selected_profile))
+        terminal_sync_row.addWidget(auto_sync)
+        terminal_sync_row.addStretch(1)
+        layout.addLayout(terminal_sync_row)
+
         self.file_tree = RemoteFileTree()
         self.file_tree.drag_profile_id = profile.id
         self.file_tree.setHeaderLabels(["名称", "修改时间", "大小", "类型"])
@@ -2856,7 +2954,7 @@ class MainWindow(QMainWindow):
         self.file_tree.remote_dropped.connect(lambda payload: self.handle_remote_tree_drop(profile, payload))
         self.file_tree.context_requested.connect(lambda item, point: self.show_file_context_menu(profile, item, point))
         layout.addWidget(self.file_tree, 1)
-        self.populate_file_tree()
+        self.populate_file_tree(profile.id)
         return pane
 
     def connect_terminal(self, profile: SSHProfile) -> None:
@@ -2880,11 +2978,42 @@ class MainWindow(QMainWindow):
             self.render_selected_profile()
 
     def append_terminal_output(self, text: str) -> None:
+        text = self.extract_terminal_directory_updates(text)
         self.terminal_text = (self.terminal_text + text)[-100000:]
         widget = getattr(self, "terminal_widget", None)
         if widget is not None:
             widget.setPlainText(self.terminal_text)
             widget.moveCursor(QTextCursor.End)
+
+    def extract_terminal_directory_updates(self, text: str) -> str:
+        def update(match: re.Match[str]) -> str:
+            payload = match.group(1)
+            path = self.path_from_osc7_payload(payload)
+            if path and self.terminal_profile_id:
+                self.terminal_directories_by_profile[self.terminal_profile_id] = path
+                profile = self.profile_by_id(self.terminal_profile_id)
+                should_sync = (
+                    profile is not None
+                    and (
+                        profile.id in self.auto_sync_terminal_directory_profile_ids
+                        or profile.id in self.pending_terminal_directory_sync_profile_ids
+                    )
+                )
+                if should_sync:
+                    self.pending_terminal_directory_sync_profile_ids.discard(profile.id)
+                    QTimer.singleShot(0, lambda selected_profile=profile, selected_path=path: self.refresh_files(selected_profile, selected_path))
+            return ""
+
+        return re.sub(r"\x1b]7;([^\x07\x1b]*)(?:\x07|\x1b\\)", update, text)
+
+    def path_from_osc7_payload(self, payload: str) -> str:
+        if payload.startswith("file://"):
+            without_scheme = payload[len("file://"):]
+            slash_index = without_scheme.find("/")
+            if slash_index >= 0:
+                return urllib.parse.unquote(without_scheme[slash_index:])
+            return ""
+        return urllib.parse.unquote(payload)
 
     def handle_terminal_status(self, status: str, message: object) -> None:
         self.terminal_status = status
@@ -2913,6 +3042,38 @@ class MainWindow(QMainWindow):
             return
         self.send_terminal_text(text + "\n")
         self.command_input.clear()
+        if self.terminal_profile_id in self.auto_sync_terminal_directory_profile_ids:
+            QTimer.singleShot(350, self.request_terminal_directory)
+
+    def copy_sftp_path_to_terminal(self, profile: SSHProfile) -> None:
+        if self.terminal_profile_id != profile.id or self.terminal_status != "connected":
+            QMessageBox.information(self, APP_NAME, "请先连接当前终端。")
+            return
+        self.send_terminal_text(shlex.quote(self.current_remote_path or "."))
+
+    def sync_sftp_to_terminal_directory(self, profile: SSHProfile) -> None:
+        if self.terminal_profile_id != profile.id or self.terminal_status != "connected":
+            QMessageBox.information(self, APP_NAME, "请先连接当前终端。")
+            return
+        directory = self.terminal_directories_by_profile.get(profile.id)
+        if directory:
+            self.refresh_files(profile, directory)
+        else:
+            self.pending_terminal_directory_sync_profile_ids.add(profile.id)
+        self.request_terminal_directory()
+
+    def toggle_auto_sync_terminal_directory(self, profile: SSHProfile) -> None:
+        if profile.id in self.auto_sync_terminal_directory_profile_ids:
+            self.auto_sync_terminal_directory_profile_ids.remove(profile.id)
+        else:
+            self.auto_sync_terminal_directory_profile_ids.add(profile.id)
+            self.sync_sftp_to_terminal_directory(profile)
+        self.render_selected_profile()
+
+    def request_terminal_directory(self) -> None:
+        if self.terminal is None or self.terminal_status != "connected":
+            return
+        self.terminal.send(" printf '\\033]7;file://%s%s\\007' \"${HOSTNAME:-remote}\" \"$PWD\"\n")
 
     def open_native_terminal(self, profile: SSHProfile) -> None:
         command = subprocess.list2cmdline(["ssh"] + profile.terminal_ssh_args(include_batch_mode=False))
@@ -3022,19 +3183,19 @@ class MainWindow(QMainWindow):
         return self.run_with_sftp(profile, action)
 
     def run_file_operation(self, profile: SSHProfile, status: str, worker: Callable, refresh_path: str | None = None) -> None:
-        self.bridge.sftp_status.emit(status)
+        self.bridge.sftp_status.emit(profile.id, status)
 
         def work() -> None:
             try:
                 worker()
                 if refresh_path is None:
-                    self.bridge.sftp_status.emit("文件完成")
+                    self.bridge.sftp_status.emit(profile.id, "文件完成")
                 else:
                     self.invalidate_directory_cache(profile, refresh_path)
                     entries, actual = self.list_remote_directory(profile, refresh_path)
-                    self.bridge.sftp_done.emit(entries, actual)
+                    self.bridge.sftp_done.emit(profile.id, entries, actual)
             except Exception as exc:
-                self.bridge.sftp_error.emit(str(exc))
+                self.bridge.sftp_error.emit(profile.id, str(exc))
 
         threading.Thread(target=work, name="SFTPOperation", daemon=True).start()
 
@@ -3045,14 +3206,17 @@ class MainWindow(QMainWindow):
         def work() -> None:
             try:
                 entries, actual = self.list_remote_directory(profile, remote_path)
-                self.bridge.sftp_done.emit(entries, actual)
+                self.bridge.sftp_done.emit(profile.id, entries, actual)
             except Exception as exc:
-                self.bridge.sftp_error.emit(str(exc))
+                self.bridge.sftp_error.emit(profile.id, str(exc))
 
         threading.Thread(target=work, name="SFTPList", daemon=True).start()
 
     def begin_remote_navigation(self, profile: SSHProfile, remote_path: str) -> None:
         self.sftp_status = "文件同步中"
+        state = self.terminal_file_state(profile.id)
+        state.status = self.sftp_status
+        state.pending_path = remote_path
         cache_key = self.directory_cache_key(profile, remote_path)
         cached = self.directory_cache.get(cache_key)
         if cached is not None:
@@ -3063,7 +3227,9 @@ class MainWindow(QMainWindow):
             self.current_remote_path = remote_path
             parent = self.parent_remote_entry(remote_path)
             self.remote_entries = [parent] if parent is not None else []
-        self.update_file_widgets()
+        state.current_path = self.current_remote_path
+        state.entries = list(self.remote_entries)
+        self.update_file_widgets(profile.id)
 
     def directory_cache_key(self, profile: SSHProfile, path: str) -> tuple[str, str]:
         normalized = (path or ".").strip() or "."
@@ -3124,24 +3290,36 @@ class MainWindow(QMainWindow):
 
         return self.run_with_sftp(profile, action)
 
-    def handle_sftp_done(self, entries: list, actual: str) -> None:
-        self.remote_entries = list(entries)
-        self.current_remote_path = actual
-        if self.store.selected() is not None:
-            profile = self.store.selected()
-            if profile is not None:
-                self.directory_cache[self.directory_cache_key(profile, actual)] = (list(entries), actual)
-        self.sftp_status = "文件完成"
-        self.update_file_widgets()
+    def handle_sftp_done(self, profile_id: str, entries: list, actual: str) -> None:
+        profile = self.profile_by_id(profile_id)
+        state = self.terminal_file_state(profile_id)
+        state.entries = list(entries)
+        state.current_path = actual
+        state.status = "文件完成"
+        state.pending_path = None
+        if profile is not None:
+            self.directory_cache[self.directory_cache_key(profile, actual)] = (list(entries), actual)
+        if self.current_file_pane_profile_id == profile_id:
+            self.remote_entries = list(entries)
+            self.current_remote_path = actual
+            self.sftp_status = state.status
+            self.update_file_widgets(profile_id)
 
-    def handle_sftp_error(self, message: str) -> None:
-        self.sftp_status = "文件失败"
-        QMessageBox.critical(self, APP_NAME, message)
-        self.update_file_widgets()
+    def handle_sftp_error(self, profile_id: str, message: str) -> None:
+        state = self.terminal_file_state(profile_id)
+        state.status = "文件失败"
+        state.pending_path = None
+        if self.current_file_pane_profile_id == profile_id:
+            self.sftp_status = state.status
+            QMessageBox.critical(self, APP_NAME, message)
+            self.update_file_widgets(profile_id)
 
-    def handle_sftp_status(self, status: str) -> None:
-        self.sftp_status = status
-        self.update_file_widgets()
+    def handle_sftp_status(self, profile_id: str, status: str) -> None:
+        state = self.terminal_file_state(profile_id)
+        state.status = status
+        if self.current_file_pane_profile_id == profile_id:
+            self.sftp_status = status
+            self.update_file_widgets(profile_id)
 
     def profile_by_id(self, profile_id: str) -> SSHProfile | None:
         return next((profile for profile in self.store.profiles if profile.id == profile_id), None)
@@ -3166,10 +3344,17 @@ class MainWindow(QMainWindow):
             return None
         return next((entry for entry in entries if entry.path == path), None)
 
-    def populate_file_tree(self) -> None:
+    def populate_file_tree(self, profile_id: str | None = None) -> None:
         tree = getattr(self, "file_tree", None)
         if tree is None:
             return
+        if profile_id is not None and self.current_file_pane_profile_id != profile_id:
+            return
+        if profile_id is not None:
+            state = self.terminal_file_state(profile_id)
+            filter_input = getattr(self, "filter_input", None)
+            if filter_input is not None:
+                state.filter_text = filter_input.text()
         needle = ""
         if hasattr(self, "filter_input"):
             needle = self.filter_input.text().strip().lower()
@@ -3179,7 +3364,9 @@ class MainWindow(QMainWindow):
                 continue
             tree.addTopLevelItem(self.make_remote_file_item(entry))
 
-    def update_file_widgets(self) -> None:
+    def update_file_widgets(self, profile_id: str | None = None) -> None:
+        if profile_id is not None and self.current_file_pane_profile_id != profile_id:
+            return
         path_input = getattr(self, "remote_path_input", None)
         if path_input is not None and path_input.text() != self.current_remote_path:
             path_input.setText(self.current_remote_path)
@@ -3187,7 +3374,7 @@ class MainWindow(QMainWindow):
         if pill is not None:
             pill.setText(self.sftp_status)
             pill.set_color(status_color(self.sftp_status))
-        self.populate_file_tree()
+        self.populate_file_tree(profile_id)
 
     def size_label_to_bytes(self, value: str) -> int:
         text = (value or "").strip()
@@ -3480,7 +3667,7 @@ cp -a -- "$src" "$target_dir/"
         if not paths:
             return
         remote_dir = self.current_remote_path or "."
-        self.bridge.sftp_status.emit("正在上传")
+        self.bridge.sftp_status.emit(profile.id, "正在上传")
 
         def work() -> None:
             try:
@@ -3488,9 +3675,9 @@ cp -a -- "$src" "$target_dir/"
                     self.upload_path(profile, Path(local), remote_dir)
                 self.invalidate_directory_cache(profile, remote_dir)
                 entries, actual = self.list_remote_directory(profile, remote_dir)
-                self.bridge.sftp_done.emit(entries, actual)
+                self.bridge.sftp_done.emit(profile.id, entries, actual)
             except Exception as exc:
-                self.bridge.sftp_error.emit(str(exc))
+                self.bridge.sftp_error.emit(profile.id, str(exc))
 
         threading.Thread(target=work, name="SFTPUpload", daemon=True).start()
 
@@ -3500,16 +3687,16 @@ cp -a -- "$src" "$target_dir/"
             QMessageBox.warning(self, APP_NAME, "没有找到拖拽来源配置。")
             return
         remote_dir = self.current_remote_path or "."
-        self.bridge.sftp_status.emit("正在上传")
+        self.bridge.sftp_status.emit(profile.id, "正在上传")
 
         def work() -> None:
             try:
                 self.transfer_remote_payload(source_profile, payload, profile, remote_dir)
                 self.invalidate_directory_cache(profile, remote_dir)
                 entries, actual = self.list_remote_directory(profile, remote_dir)
-                self.bridge.sftp_done.emit(entries, actual)
+                self.bridge.sftp_done.emit(profile.id, entries, actual)
             except Exception as exc:
-                self.bridge.sftp_error.emit(str(exc))
+                self.bridge.sftp_error.emit(profile.id, str(exc))
 
         threading.Thread(target=work, name="SFTPRemoteDrop", daemon=True).start()
 
@@ -3545,14 +3732,14 @@ cp -a -- "$src" "$target_dir/"
         target_dir = QFileDialog.getExistingDirectory(self, "选择下载位置")
         if not target_dir:
             return
-        self.bridge.sftp_status.emit("正在下载")
+        self.bridge.sftp_status.emit(profile.id, "正在下载")
 
         def work() -> None:
             try:
                 self.download_path(profile, entry, Path(target_dir))
-                self.bridge.sftp_status.emit("文件完成")
+                self.bridge.sftp_status.emit(profile.id, "文件完成")
             except Exception as exc:
-                self.bridge.sftp_error.emit(str(exc))
+                self.bridge.sftp_error.emit(profile.id, str(exc))
 
         threading.Thread(target=work, name="SFTPDownload", daemon=True).start()
 

@@ -437,7 +437,7 @@ private extension WorkspaceKind {
         case .terminal:
             return number <= 1 ? "新终端" : "新终端 \(number)"
         case .sftp:
-            return number <= 1 ? "新 SFTP" : "新 SFTP \(number)"
+            return number <= 1 ? "SFTP" : "SFTP \(number)"
         }
     }
 

@@ -202,6 +202,11 @@ jobs:
           417ssh $VERSION portable packages.
 
           Highlights:
+          - Workspace switching now keeps terminal sessions and SFTP browser state alive instead of tearing down the file panes when you leave the page.
+          - Terminal workspaces add three SFTP side-panel actions: copy the current SFTP path into the terminal, sync the SFTP pane to the terminal folder, and auto-sync with terminal folder changes.
+          - Terminal SFTP side panels keep per-profile path, listing, filter, cached directory, and connection state so another workspace does not overwrite the active file browser.
+          - The built-in SFTP workspace is named SFTP, and Hosts start with local host only; terminal workspaces appear there automatically, while extra SFTP sources are created through Add custom SFTP.
+          - SFTP Host cards are more compact and easier to click across the whole card area.
           - Pure SFTP still has a single sidebar workspace entry, but each top tab now contains a left/right A/B pair for direct transfers.
           - The A side opens local host \`127.0.0.1\` by default; A and B can each choose local files, terminal workspaces, or custom SFTP profiles from Hosts.
           - A/B panes keep independent source, path, selection, filter, sorting, and cached directory state while switching tabs.
@@ -209,7 +214,7 @@ jobs:
           - Existing extra SFTP profiles are hidden from the sidebar but remain available as custom SFTP Hosts sources.
           - Local-to-remote drag uploads, remote-to-local drag downloads, and remote-to-remote drag transfer are supported between the A/B panes.
           - SFTP pane toolbars and file rows remain compact, leaving more room for the actual file list.
-          - Profile editor imports existing `ssh ...` commands inline, without a separate popup, and fills host, jump host, forwarding, flags, and identity file fields.
+          - Profile editor imports existing \`ssh ...\` commands inline, without a separate popup, and fills host, jump host, forwarding, flags, and identity file fields.
           - Sidebar actions are simplified to Add, Delete, and Settings; Add opens a workspace-type menu.
           - New profiles can be canceled directly; canceling removes the temporary blank profile instead of leaving it behind.
           - Blank SFTP workspaces no longer auto-select another saved server; empty profiles stay local until configured.

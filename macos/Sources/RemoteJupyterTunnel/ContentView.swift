@@ -305,7 +305,7 @@ struct ContentView: View {
         case .jupyter, .rstudio:
             return tunnel.activeProfileID == profile.id && tunnel.status.isRunning
         case .terminal:
-            return terminal.activeProfileID == profile.id && terminal.status.isRunning
+            return terminal.isRunning(profile.id)
         case .sftp:
             return false
         }
@@ -1372,24 +1372,93 @@ private enum WebWorkspaceTab: String, CaseIterable, Identifiable {
     }
 }
 
+private struct TerminalFileSidebarState: Equatable {
+    var selectedEntry: RemoteFileEntry?
+    var remotePathText = "."
+    var isVisible = false
+    var automaticallySyncsTerminalDirectory = false
+}
+
+@MainActor
+private final class TerminalFileSidebarStateStore: ObservableObject {
+    static let shared = TerminalFileSidebarStateStore()
+
+    @Published private var states: [UUID: TerminalFileSidebarState] = [:]
+    private var sftpManagers: [UUID: SFTPManager] = [:]
+
+    private init() {}
+
+    func state(for profileID: UUID) -> TerminalFileSidebarState {
+        states[profileID] ?? TerminalFileSidebarState()
+    }
+
+    func update(_ profileID: UUID, _ mutate: (inout TerminalFileSidebarState) -> Void) {
+        var state = states[profileID] ?? TerminalFileSidebarState()
+        mutate(&state)
+        states[profileID] = state
+    }
+
+    func sftpManager(for profileID: UUID) -> SFTPManager {
+        if let manager = sftpManagers[profileID] {
+            return manager
+        }
+
+        let manager = SFTPManager()
+        sftpManagers[profileID] = manager
+        return manager
+    }
+}
+
 private struct TerminalWorkspaceView: View {
     @EnvironmentObject private var store: ProfileStore
     @EnvironmentObject private var terminal: TerminalManager
-    @EnvironmentObject private var sftp: SFTPManager
 
     let profileBox: BindingBox<SSHProfile>
     let onEdit: () -> Void
 
-    @State private var selectedEntry: RemoteFileEntry?
-    @State private var remotePathText = "."
-    @State private var isFileSidebarVisible = false
+    @StateObject private var fileSidebarStateStore = TerminalFileSidebarStateStore.shared
 
     private var currentProfile: SSHProfile {
         profileBox.get()
     }
 
+    private var fileSidebarState: TerminalFileSidebarState {
+        fileSidebarStateStore.state(for: currentProfile.id)
+    }
+
+    private var fileSidebarSFTP: SFTPManager {
+        fileSidebarStateStore.sftpManager(for: currentProfile.id)
+    }
+
+    private var selectedEntry: Binding<RemoteFileEntry?> {
+        Binding(
+            get: { fileSidebarStateStore.state(for: currentProfile.id).selectedEntry },
+            set: { newValue in
+                fileSidebarStateStore.update(currentProfile.id) { $0.selectedEntry = newValue }
+            }
+        )
+    }
+
+    private var remotePathText: Binding<String> {
+        Binding(
+            get: { fileSidebarStateStore.state(for: currentProfile.id).remotePathText },
+            set: { newValue in
+                fileSidebarStateStore.update(currentProfile.id) { $0.remotePathText = newValue }
+            }
+        )
+    }
+
+    private var automaticallySyncsTerminalDirectory: Binding<Bool> {
+        Binding(
+            get: { fileSidebarStateStore.state(for: currentProfile.id).automaticallySyncsTerminalDirectory },
+            set: { newValue in
+                fileSidebarStateStore.update(currentProfile.id) { $0.automaticallySyncsTerminalDirectory = newValue }
+            }
+        )
+    }
+
     private var isCurrentProfileTerminal: Bool {
-        terminal.activeProfileID == currentProfile.id && terminal.status.isRunning
+        terminal.isRunning(currentProfile.id)
     }
 
     var body: some View {
@@ -1400,13 +1469,16 @@ private struct TerminalWorkspaceView: View {
                 terminalPane
                     .frame(minWidth: 360, maxWidth: .infinity, maxHeight: .infinity)
 
-                if isFileSidebarVisible {
+                if fileSidebarState.isVisible {
                     RemoteFileBrowserPane(
                         profile: currentProfile,
                         availableProfiles: store.profiles,
-                        selectedEntry: $selectedEntry,
-                        remotePathText: $remotePathText
+                        selectedEntry: selectedEntry,
+                        remotePathText: remotePathText,
+                        terminalProfileID: currentProfile.id,
+                        automaticallySyncsTerminalDirectory: automaticallySyncsTerminalDirectory
                     )
+                    .environmentObject(fileSidebarSFTP)
                     .frame(minWidth: 360, idealWidth: 520, maxWidth: 780, maxHeight: .infinity)
                     .transition(.move(edge: .trailing).combined(with: .opacity))
                 }
@@ -1415,12 +1487,15 @@ private struct TerminalWorkspaceView: View {
         }
         .background(Color(nsColor: .windowBackgroundColor))
         .onAppear {
-            remotePathText = sftp.activeProfileID == currentProfile.id ? sftp.currentRemotePath : "."
+            if fileSidebarState.remotePathText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                fileSidebarStateStore.update(currentProfile.id) {
+                    $0.remotePathText = fileSidebarSFTP.activeProfileID == currentProfile.id ? fileSidebarSFTP.currentRemotePath : "."
+                }
+            }
         }
-        .onChange(of: terminal.status) { newStatus in
+        .onChange(of: terminal.statusByProfileID) { _ in
             guard
-                newStatus == .connected,
-                terminal.activeProfileID == currentProfile.id
+                terminal.status(for: currentProfile.id) == .connected
             else {
                 return
             }
@@ -1499,17 +1574,17 @@ private struct TerminalWorkspaceView: View {
         .buttonStyle(.bordered)
 
         Button(action: toggleFileSidebar) {
-            Label(isFileSidebarVisible ? "隐藏文件" : "文件", systemImage: "sidebar.right")
+            Label(fileSidebarState.isVisible ? "隐藏文件" : "文件", systemImage: "sidebar.right")
         }
         .buttonStyle(.bordered)
         .disabled(currentProfile.targetHost.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
 
-        if isFileSidebarVisible {
+        if fileSidebarState.isVisible {
             Button(action: refreshFiles) {
                 Label("刷新文件", systemImage: "arrow.clockwise")
             }
             .buttonStyle(.bordered)
-            .disabled(sftp.status == .running || currentProfile.targetHost.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            .disabled(fileSidebarSFTP.status == .running || currentProfile.targetHost.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
         }
 
         Button {
@@ -1522,7 +1597,7 @@ private struct TerminalWorkspaceView: View {
 
         Button {
             if isCurrentProfileTerminal {
-                terminal.disconnect()
+                terminal.disconnect(profileID: currentProfile.id)
             } else {
                 terminal.connect(profile: currentProfile)
             }
@@ -1544,7 +1619,7 @@ private struct TerminalWorkspaceView: View {
                 Spacer()
 
                 Button {
-                    terminal.clear()
+                    terminal.clear(profileID: currentProfile.id)
                 } label: {
                     Label("清空", systemImage: "trash")
                 }
@@ -1552,7 +1627,7 @@ private struct TerminalWorkspaceView: View {
                 .help("清空终端输出")
 
                 Button {
-                    terminal.sendControlC()
+                    terminal.sendControlC(profileID: currentProfile.id)
                 } label: {
                     Label("中断", systemImage: "command")
                 }
@@ -1568,9 +1643,9 @@ private struct TerminalWorkspaceView: View {
 
                 if !isCurrentProfileTerminal {
                     EmptyStateView(
-                        systemImage: terminal.activeProfileID == nil ? "terminal" : "rectangle.2.swap",
-                        title: terminal.activeProfileID == nil ? "终端未连接" : "其他终端正在运行",
-                        subtitle: terminal.activeProfileID == nil ? "点击“连接终端”后，这里就是完整 PTY 终端" : "连接当前终端会先断开旧终端"
+                        systemImage: "terminal",
+                        title: "终端未连接",
+                        subtitle: "点击“连接终端”后，这里就是完整 PTY 终端"
                     )
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .background(Color(nsColor: .textBackgroundColor).opacity(0.92))
@@ -1585,19 +1660,11 @@ private struct TerminalWorkspaceView: View {
     }
 
     private var terminalTitle: String {
-        if terminal.activeProfileID == currentProfile.id {
-            return terminal.terminalTitle
-        }
-
-        return "SSH 终端"
+        terminal.title(for: currentProfile.id)
     }
 
     private var terminalStatusColor: Color {
-        if terminal.activeProfileID != nil, terminal.activeProfileID != currentProfile.id {
-            return .orange
-        }
-
-        switch terminal.status {
+        switch terminal.status(for: currentProfile.id) {
         case .disconnected:
             return .secondary
         case .connecting:
@@ -1610,20 +1677,18 @@ private struct TerminalWorkspaceView: View {
     }
 
     private var terminalStatusText: String {
-        if terminal.activeProfileID != nil, terminal.activeProfileID != currentProfile.id {
-            return "其他终端运行中"
-        }
-
-        return terminal.status.label
+        terminal.status(for: currentProfile.id).label
     }
 
     private func refreshFiles() {
-        sftp.refreshDirectory(profile: currentProfile, path: remotePathText)
+        fileSidebarSFTP.refreshDirectory(profile: currentProfile, path: fileSidebarState.remotePathText)
     }
 
     private func toggleFileSidebar() {
-        isFileSidebarVisible.toggle()
-        if isFileSidebarVisible {
+        fileSidebarStateStore.update(currentProfile.id) {
+            $0.isVisible.toggle()
+        }
+        if fileSidebarStateStore.state(for: currentProfile.id).isVisible {
             refreshFiles()
         }
     }
@@ -1675,6 +1740,33 @@ private struct SFTPTabState: Identifiable, Equatable {
     }
 }
 
+@MainActor
+private final class SFTPWorkspaceStateStore: ObservableObject {
+    static let shared = SFTPWorkspaceStateStore()
+
+    @Published var tabs: [SFTPTabState] = [.first()]
+    @Published var selectedTabID: UUID?
+    var sideManagers: [UUID: SFTPManager] = [:]
+
+    private init() {
+        ensureManagers()
+        selectedTabID = tabs.first?.id
+    }
+
+    func ensureManagers() {
+        for tab in tabs {
+            for sideID in [tab.left.id, tab.right.id] where sideManagers[sideID] == nil {
+                sideManagers[sideID] = SFTPManager()
+            }
+        }
+    }
+
+    func removeManager(for sideID: UUID) {
+        sideManagers[sideID]?.cancel()
+        sideManagers.removeValue(forKey: sideID)
+    }
+}
+
 private struct SFTPSource: Identifiable, Equatable {
     static let localKey = "local"
 
@@ -1718,9 +1810,7 @@ private struct SFTPWorkspaceView: View {
     let onAddCustomSFTP: () -> SSHProfile
     let onDeleteCustomSFTP: (UUID) -> Void
 
-    @State private var tabs: [SFTPTabState] = [.first()]
-    @State private var selectedTabID: UUID?
-    @State private var sideManagers: [UUID: SFTPManager] = [:]
+    @StateObject private var workspaceState = SFTPWorkspaceStateStore.shared
 
     private var currentProfile: SSHProfile {
         profileBox.get()
@@ -1728,16 +1818,20 @@ private struct SFTPWorkspaceView: View {
 
     private var sources: [SFTPSource] {
         let remoteSources = store.profiles
-            .filter { $0.workspaceKind == .terminal || $0.workspaceKind == .sftp }
+            .filter { profile in
+                profile.workspaceKind == .terminal
+                    || (profile.workspaceKind == .sftp && profile.id != currentProfile.id)
+            }
             .map(SFTPSource.profile)
         return [.local] + remoteSources
     }
 
     private var activeTab: SFTPTabState? {
-        if let selectedTabID, let tab = tabs.first(where: { $0.id == selectedTabID }) {
+        if let selectedTabID = workspaceState.selectedTabID,
+           let tab = workspaceState.tabs.first(where: { $0.id == selectedTabID }) {
             return tab
         }
-        return tabs.first
+        return workspaceState.tabs.first
     }
 
     var body: some View {
@@ -1789,7 +1883,7 @@ private struct SFTPWorkspaceView: View {
                 .font(.headline.weight(.semibold))
                 .lineLimit(1)
 
-            StatusDot(text: "\(tabs.count) 个标签", color: AppTheme.workspaceColor(.sftp))
+            StatusDot(text: "\(workspaceState.tabs.count) 个标签", color: AppTheme.workspaceColor(.sftp))
 
             Text("每个标签包含 A/B 两栏，可左右拖拽传输")
                 .font(.caption)
@@ -1812,7 +1906,7 @@ private struct SFTPWorkspaceView: View {
     private var tabBar: some View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 6) {
-                ForEach(tabs) { tab in
+                ForEach(workspaceState.tabs) { tab in
                     sftpTabButton(tab)
                 }
 
@@ -1839,7 +1933,7 @@ private struct SFTPWorkspaceView: View {
                 .font(.caption.weight(.semibold))
                 .lineLimit(1)
 
-            if tabs.count > 1 {
+            if workspaceState.tabs.count > 1 {
                 Button {
                     closeTab(tab.id)
                 } label: {
@@ -1859,70 +1953,68 @@ private struct SFTPWorkspaceView: View {
         }
         .contentShape(Rectangle())
         .onTapGesture {
-            selectedTabID = tab.id
+            workspaceState.selectedTabID = tab.id
         }
     }
 
     private func tabBinding(_ tabID: UUID) -> Binding<SFTPTabState> {
         Binding(
             get: {
-                tabs.first(where: { $0.id == tabID }) ?? tabs[0]
+                workspaceState.tabs.first(where: { $0.id == tabID }) ?? workspaceState.tabs[0]
             },
             set: { updatedTab in
-                guard let index = tabs.firstIndex(where: { $0.id == tabID }) else { return }
-                tabs[index] = updatedTab
+                guard let index = workspaceState.tabs.firstIndex(where: { $0.id == tabID }) else { return }
+                workspaceState.tabs[index] = updatedTab
             }
         )
     }
 
     private func ensureTabs() {
-        if tabs.isEmpty {
-            tabs = [.first()]
+        if workspaceState.tabs.isEmpty {
+            workspaceState.tabs = [.first()]
         }
-        selectedTabID = selectedTabID ?? tabs.first?.id
-        ensureManagers()
+        workspaceState.selectedTabID = workspaceState.selectedTabID ?? workspaceState.tabs.first?.id
+        workspaceState.ensureManagers()
         normalizeTabs()
     }
 
     private func normalizeTabs() {
         let sourceIDs = Set(sources.map(\.id))
-        for index in tabs.indices {
-            normalizeSide(&tabs[index].left, sourceIDs: sourceIDs)
-            normalizeSide(&tabs[index].right, sourceIDs: sourceIDs)
+        for index in workspaceState.tabs.indices {
+            normalizeSide(&workspaceState.tabs[index].left, sourceIDs: sourceIDs)
+            normalizeSide(&workspaceState.tabs[index].right, sourceIDs: sourceIDs)
         }
-        ensureManagers()
-        let sideIDs = Set(tabs.flatMap { [$0.left.id, $0.right.id] })
-        for managerID in sideManagers.keys where !sideIDs.contains(managerID) {
-            sideManagers[managerID]?.cancel()
-            sideManagers.removeValue(forKey: managerID)
+        workspaceState.ensureManagers()
+        let sideIDs = Set(workspaceState.tabs.flatMap { [$0.left.id, $0.right.id] })
+        for managerID in Array(workspaceState.sideManagers.keys) where !sideIDs.contains(managerID) {
+            workspaceState.removeManager(for: managerID)
         }
     }
 
     private func addTab() {
-        let tab = SFTPTabState.empty(number: tabs.count + 1)
-        tabs.append(tab)
-        sideManagers[tab.left.id] = SFTPManager()
-        sideManagers[tab.right.id] = SFTPManager()
-        selectedTabID = tab.id
+        let tab = SFTPTabState.empty(number: workspaceState.tabs.count + 1)
+        workspaceState.tabs.append(tab)
+        workspaceState.sideManagers[tab.left.id] = SFTPManager()
+        workspaceState.sideManagers[tab.right.id] = SFTPManager()
+        workspaceState.selectedTabID = tab.id
     }
 
     private func closeTab(_ tabID: UUID) {
-        guard tabs.count > 1 else { return }
-        guard let index = tabs.firstIndex(where: { $0.id == tabID }) else { return }
-        let tab = tabs[index]
-        tabs.remove(at: index)
+        guard workspaceState.tabs.count > 1 else { return }
+        guard let index = workspaceState.tabs.firstIndex(where: { $0.id == tabID }) else { return }
+        let tab = workspaceState.tabs[index]
+        workspaceState.tabs.remove(at: index)
         for sideID in [tab.left.id, tab.right.id] {
-            sideManagers[sideID]?.cancel()
-            sideManagers.removeValue(forKey: sideID)
+            workspaceState.removeManager(for: sideID)
         }
-        if selectedTabID == tabID {
-            selectedTabID = tabs[min(index, tabs.count - 1)].id
+        if workspaceState.selectedTabID == tabID {
+            workspaceState.selectedTabID = workspaceState.tabs[min(index, workspaceState.tabs.count - 1)].id
         }
     }
 
     private func select(_ source: SFTPSource, for tabID: UUID, side: SFTPSide) {
-        guard let index = tabs.firstIndex(where: { $0.id == tabID }) else { return }
-        var pane = paneState(for: side, in: tabs[index])
+        guard let index = workspaceState.tabs.firstIndex(where: { $0.id == tabID }) else { return }
+        var pane = paneState(for: side, in: workspaceState.tabs[index])
         pane.sourceKey = source.id
         pane.title = source.title
         pane.selectedEntry = nil
@@ -1930,36 +2022,28 @@ private struct SFTPWorkspaceView: View {
         pane.filterText = ""
         setPaneState(pane, for: side, in: index)
 
-        if sideManagers[pane.id] == nil {
-            sideManagers[pane.id] = SFTPManager()
+        if workspaceState.sideManagers[pane.id] == nil {
+            workspaceState.sideManagers[pane.id] = SFTPManager()
         }
-        sideManagers[pane.id]?.cancel()
-        sideManagers[pane.id]?.clear()
+        workspaceState.sideManagers[pane.id]?.cancel()
+        workspaceState.sideManagers[pane.id]?.clear()
     }
 
     private func clearSource(for tabID: UUID, side: SFTPSide) {
-        guard let index = tabs.firstIndex(where: { $0.id == tabID }) else { return }
-        var pane = paneState(for: side, in: tabs[index])
+        guard let index = workspaceState.tabs.firstIndex(where: { $0.id == tabID }) else { return }
+        var pane = paneState(for: side, in: workspaceState.tabs[index])
         pane.sourceKey = nil
         pane.title = "选择主机"
         pane.selectedEntry = nil
         pane.pathText = NSHomeDirectory()
         pane.filterText = ""
         setPaneState(pane, for: side, in: index)
-        sideManagers[pane.id]?.cancel()
-        sideManagers[pane.id]?.clear()
-    }
-
-    private func ensureManagers() {
-        for tab in tabs {
-            for sideID in [tab.left.id, tab.right.id] where sideManagers[sideID] == nil {
-                sideManagers[sideID] = SFTPManager()
-            }
-        }
+        workspaceState.sideManagers[pane.id]?.cancel()
+        workspaceState.sideManagers[pane.id]?.clear()
     }
 
     private func manager(for sideID: UUID) -> SFTPManager {
-        sideManagers[sideID] ?? SFTPManager.shared
+        workspaceState.sideManagers[sideID] ?? SFTPManager.shared
     }
 
     private func normalizeSide(_ side: inout SFTPSideState, sourceIDs: Set<String>) {
@@ -1977,9 +2061,9 @@ private struct SFTPWorkspaceView: View {
 
     private func setPaneState(_ pane: SFTPSideState, for side: SFTPSide, in index: Int) {
         if side == .left {
-            tabs[index].left = pane
+            workspaceState.tabs[index].left = pane
         } else {
-            tabs[index].right = pane
+            workspaceState.tabs[index].right = pane
         }
     }
 
@@ -2183,12 +2267,12 @@ private struct SFTPHostPickerView: View {
             Button {
                 onSelect(source)
             } label: {
-                HStack(spacing: 14) {
+                HStack(spacing: 12) {
                     Image(systemName: source.systemImage)
-                        .font(.system(size: 26, weight: .bold))
+                        .font(.system(size: 18, weight: .bold))
                         .foregroundStyle(Color.white)
-                        .frame(width: 54, height: 54)
-                        .background(source.isLocal ? Color.black : Color.orange, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                        .frame(width: 40, height: 40)
+                        .background(source.isLocal ? Color.black : Color.orange, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
 
                     VStack(alignment: .leading, spacing: 5) {
                         Text(source.title)
@@ -2206,8 +2290,11 @@ private struct SFTPHostPickerView: View {
 
                     Spacer(minLength: 0)
                 }
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
+                .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
 
             if canManage, let profileID = source.profile?.id {
                 VStack(spacing: 6) {
@@ -2232,8 +2319,8 @@ private struct SFTPHostPickerView: View {
                 }
             }
         }
-        .padding(.horizontal, 16)
-        .frame(height: 88)
+        .padding(.horizontal, 14)
+        .frame(height: 78)
         .background(Color(nsColor: .textBackgroundColor), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
         .overlay {
             RoundedRectangle(cornerRadius: 8, style: .continuous)
@@ -2271,7 +2358,9 @@ private struct RemoteSFTPTabPane: View {
                     profile: profile,
                     availableProfiles: availableProfiles,
                     selectedEntry: $pane.selectedEntry,
-                    remotePathText: $pane.pathText
+                    remotePathText: $pane.pathText,
+                    terminalProfileID: nil,
+                    automaticallySyncsTerminalDirectory: .constant(false)
                 )
                 .environmentObject(sftp)
             } else {
@@ -3103,7 +3192,9 @@ private struct SFTPWorkspacePaneContainer: View {
                     profile: selectedProfile,
                     availableProfiles: availableProfiles,
                     selectedEntry: $pane.selectedEntry,
-                    remotePathText: $pane.remotePathText
+                    remotePathText: $pane.remotePathText,
+                    terminalProfileID: nil,
+                    automaticallySyncsTerminalDirectory: .constant(false)
                 )
                 .environmentObject(sftp)
             } else if selectedProfile != nil {
@@ -3154,11 +3245,14 @@ private struct SFTPWorkspacePaneContainer: View {
 
 private struct RemoteFileBrowserPane: View {
     @EnvironmentObject private var sftp: SFTPManager
+    @EnvironmentObject private var terminal: TerminalManager
 
     let profile: SSHProfile
     let availableProfiles: [SSHProfile]
     @Binding var selectedEntry: RemoteFileEntry?
     @Binding var remotePathText: String
+    let terminalProfileID: UUID?
+    @Binding var automaticallySyncsTerminalDirectory: Bool
     @State private var filterText = ""
     @State private var isDropTarget = false
     @State private var sortColumn: RemoteFileSortColumn = .name
@@ -3367,6 +3461,10 @@ private struct RemoteFileBrowserPane: View {
                 remotePathText = newPath
             }
         }
+        .onChange(of: terminalDirectory) { newPath in
+            guard automaticallySyncsTerminalDirectory, newPath != nil else { return }
+            syncToTerminalDirectory(newPath)
+        }
     }
 
     private var statusColor: Color {
@@ -3408,6 +3506,11 @@ private struct RemoteFileBrowserPane: View {
 
     private var visibleLogText: String {
         sftp.activeProfileID == profile.id ? sftp.logText : ""
+    }
+
+    private var terminalDirectory: String? {
+        guard let terminalProfileID else { return nil }
+        return terminal.currentDirectory(for: terminalProfileID)
     }
 
     private var isRootPath: Bool {
@@ -3811,6 +3914,10 @@ private struct RemoteFileBrowserPane: View {
 
             Spacer(minLength: 0)
 
+            if terminalProfileID != nil {
+                terminalIntegrationButtons
+            }
+
             Button {
                 sftp.clear()
             } label: {
@@ -3824,6 +3931,44 @@ private struct RemoteFileBrowserPane: View {
         .padding(.horizontal, 12)
         .frame(height: 30)
         .background(Color(nsColor: .controlBackgroundColor).opacity(0.26))
+    }
+
+    private var terminalIntegrationButtons: some View {
+        HStack(spacing: 8) {
+            Button {
+                copySFTPPathToTerminal()
+            } label: {
+                Label("将 SFTP 路径复制到终端", systemImage: "terminal")
+            }
+            .labelStyle(.iconOnly)
+            .buttonStyle(.plain)
+            .foregroundStyle(.secondary)
+            .help("将当前 SFTP 目录路径复制到终端")
+
+            Button {
+                requestAndSyncTerminalDirectory()
+            } label: {
+                Label("同步到终端文件夹", systemImage: "location")
+            }
+            .labelStyle(.iconOnly)
+            .buttonStyle(.plain)
+            .foregroundStyle(.secondary)
+            .help("同步到终端当前文件夹")
+
+            Button {
+                automaticallySyncsTerminalDirectory.toggle()
+                if automaticallySyncsTerminalDirectory {
+                    requestAndSyncTerminalDirectory()
+                }
+            } label: {
+                Label("自动同步终端文件夹", systemImage: automaticallySyncsTerminalDirectory ? "link.circle.fill" : "link.circle")
+            }
+            .labelStyle(.iconOnly)
+            .buttonStyle(.plain)
+            .foregroundStyle(automaticallySyncsTerminalDirectory ? Color.accentColor : .secondary)
+            .help(automaticallySyncsTerminalDirectory ? "已开启自动同步终端文件夹" : "开启自动同步终端文件夹")
+        }
+        .disabled(terminalProfileID.map { !terminal.isRunning($0) } ?? true)
     }
 
     private var footerText: String {
@@ -3844,6 +3989,30 @@ private struct RemoteFileBrowserPane: View {
 
         return "\(visibleEntries.count) 个项目"
     }
+
+    private func copySFTPPathToTerminal() {
+        guard let terminalProfileID else { return }
+        terminal.sendText(remotePathText.shellQuotedForTerminalPaste, profileID: terminalProfileID)
+    }
+
+    private func requestAndSyncTerminalDirectory() {
+        guard let terminalProfileID else { return }
+        if let directory = terminal.currentDirectory(for: terminalProfileID) {
+            syncToTerminalDirectory(directory)
+        }
+        terminal.requestCurrentDirectory(profileID: terminalProfileID)
+    }
+
+    private func syncToTerminalDirectory(_ directory: String?) {
+        guard let directory, !directory.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            showAlert(title: "还没有终端目录", message: "终端暂时没有上报当前目录，请先在终端里执行一次命令，或稍后再试。")
+            return
+        }
+
+        selectedEntry = nil
+        remotePathText = directory
+        sftp.refreshDirectory(profile: profile, path: directory)
+    }
 }
 
 private final class LockedPathCollector: @unchecked Sendable {
@@ -3861,6 +4030,17 @@ private final class LockedPathCollector: @unchecked Sendable {
         let result = paths
         lock.unlock()
         return result
+    }
+}
+
+private extension String {
+    var shellQuotedForTerminalPaste: String {
+        let trimmed = trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return "''" }
+        if trimmed.range(of: #"[^A-Za-z0-9_@%+=:,./~-]"#, options: .regularExpression) == nil {
+            return trimmed
+        }
+        return "'" + trimmed.replacingOccurrences(of: "'", with: "'\\''") + "'"
     }
 }
 
