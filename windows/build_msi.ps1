@@ -2,11 +2,13 @@ $ErrorActionPreference = "Stop"
 Set-Location $PSScriptRoot
 
 $versionFile = Join-Path $PSScriptRoot "VERSION"
-$version = if ($env:VERSION) { $env:VERSION } elseif (Test-Path $versionFile) { (Get-Content $versionFile -Raw).Trim() } else { "0.4.5" }
+$version = if ($env:VERSION) { $env:VERSION } elseif (Test-Path $versionFile) { (Get-Content $versionFile -Raw).Trim() } else { "0.4.6" }
+throw "MSI 打包暂未适配当前 onedir portable 结构；官方 Windows 发布包请使用 build_portable.ps1 生成 417ssh-$version-win-portable.zip。"
+
 $appName = "417ssh"
 $manufacturer = "Vonfre"
 $upgradeCode = "1F9AB05B-46B8-46E0-A7FB-4170E7F0417F"
-$exePath = Join-Path $PSScriptRoot "dist\417ssh.exe"
+$exePath = Join-Path $PSScriptRoot "dist\417ssh\417ssh.exe"
 $iconPath = Join-Path $PSScriptRoot "assets\logo.ico"
 $buildDir = Join-Path $PSScriptRoot "build\msi"
 $wxsPath = Join-Path $buildDir "417ssh.wxs"

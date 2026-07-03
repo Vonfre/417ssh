@@ -2,9 +2,10 @@ $ErrorActionPreference = "Stop"
 Set-Location $PSScriptRoot
 
 $versionFile = Join-Path $PSScriptRoot "VERSION"
-$version = if ($env:VERSION) { $env:VERSION } elseif (Test-Path $versionFile) { (Get-Content $versionFile -Raw).Trim() } else { "0.4.5" }
+$version = if ($env:VERSION) { $env:VERSION } elseif (Test-Path $versionFile) { (Get-Content $versionFile -Raw).Trim() } else { "0.4.6" }
 $appName = "417ssh"
-$exePath = Join-Path $PSScriptRoot "dist\417ssh.exe"
+$appBuildDir = Join-Path $PSScriptRoot "dist\417ssh"
+$exePath = Join-Path $appBuildDir "417ssh.exe"
 $stagingRoot = Join-Path $PSScriptRoot "build\portable"
 $portableDir = Join-Path $stagingRoot $appName
 $zipPath = Join-Path $PSScriptRoot "dist\$appName-$version-win-portable.zip"
@@ -23,7 +24,7 @@ if (Test-Path $stagingRoot) {
 New-Item -ItemType Directory -Force -Path $portableDir | Out-Null
 New-Item -ItemType Directory -Force -Path (Split-Path $zipPath) | Out-Null
 
-Copy-Item $exePath (Join-Path $portableDir "$appName.exe") -Force
+Copy-Item (Join-Path $appBuildDir "*") $portableDir -Recurse -Force
 Copy-Item (Join-Path $PSScriptRoot "VERSION") (Join-Path $portableDir "VERSION") -Force
 
 $readme = @"
@@ -33,6 +34,7 @@ $readme = @"
 1. 解压整个文件夹。
 2. 双击 417ssh.exe 运行。
 3. 配置文件仍保存在 %APPDATA%\417ssh\profiles.json。
+4. 请保持 417ssh.exe 和 _internal 文件夹在同一个目录，不要只移动 exe。
 
 如果 Windows SmartScreen 提示未知发布者，请选择“更多信息”后继续运行。发布正式版本时建议后续补代码签名。
 "@

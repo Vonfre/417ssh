@@ -30,11 +30,9 @@ image.save(target, sizes=[(16, 16), (32, 32), (48, 48), (128, 128), (256, 256)])
 
 $pyInstallerArgs = @(
     "--noconsole",
-    "--onefile",
     "--clean",
     "--name", "417ssh",
     "--icon", "assets\logo.ico",
-    "--collect-all", "PySide6",
     "--collect-all", "paramiko",
     "--hidden-import", "dataclasses",
     "--hidden-import", "queue",
@@ -54,9 +52,10 @@ $pyInstallerArgs = @(
 
 & $python @pythonArgs -m PyInstaller @pyInstallerArgs
 
-if (-not (Test-Path "$PSScriptRoot\dist\417ssh.exe")) {
-    throw "PyInstaller did not create dist\417ssh.exe"
+$exePath = Join-Path $PSScriptRoot "dist\417ssh\417ssh.exe"
+if (-not (Test-Path $exePath)) {
+    throw "PyInstaller did not create $exePath"
 }
 
 Write-Host ""
-Write-Host "Built: $PSScriptRoot\dist\417ssh.exe"
+Write-Host "Built: $exePath"

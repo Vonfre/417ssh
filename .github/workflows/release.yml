@@ -202,6 +202,9 @@ jobs:
           417ssh $VERSION portable packages.
 
           Highlights:
+          - Windows portable packaging now uses an onedir app folder, so 417ssh.exe is no longer a giant single-file executable and startup/update replacement is more reliable.
+          - Windows UI styling is tightened toward the macOS app with a softer sidebar, denser profile rows, smoother buttons, and more compact SFTP host cards.
+          - Legacy Windows builds before this updater may need one manual zip replacement because the old batch updater could kill its own cmd process while showing `find "<PID>"`.
           - Windows download-and-install updates now run through a hidden background PowerShell updater instead of opening a visible cmd/Windows Terminal window.
           - Windows updater writes an install log, backs up the current portable folder, and attempts rollback plus app restart if replacement fails.
           - Windows built-in terminal now uses a bundled xterm.js terminal emulator connected to the Paramiko SSH PTY, instead of rendering terminal output in a simulated text box.

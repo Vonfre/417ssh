@@ -85,7 +85,7 @@ def app_version() -> str:
         text = version_file.read_text(encoding="utf-8").strip()
         if text:
             return text
-    return "0.4.5"
+    return "0.4.6"
 
 
 CURRENT_VERSION = app_version()
@@ -520,6 +520,44 @@ function Wait-AppExit {{
     }}
 }}
 
+function Stop-AppProcessesInDestination {{
+    try {{
+        $destinationRoot = [System.IO.Path]::GetFullPath($Destination).TrimEnd([char]92) + [string][char]92
+        Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
+            Where-Object {{
+                $_.ProcessId -ne $PID -and
+                $_.ExecutablePath -and
+                [System.IO.Path]::GetFullPath($_.ExecutablePath).StartsWith($destinationRoot, [System.StringComparison]::OrdinalIgnoreCase)
+            }} |
+            ForEach-Object {{
+                Write-UpdateLog ("Stopping remaining app process: " + $_.ProcessId)
+                Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue
+            }}
+    }} catch {{
+        Write-UpdateLog ("Process cleanup skipped: " + $_.Exception.Message)
+    }}
+}}
+
+function Invoke-WithRetry {{
+    param(
+        [string]$Label,
+        [scriptblock]$Action
+    )
+    $lastError = $null
+    for ($attempt = 1; $attempt -le 12; $attempt++) {{
+        try {{
+            & $Action
+            return
+        }} catch {{
+            $lastError = $_.Exception.Message
+            Write-UpdateLog ("$Label failed on attempt $attempt: " + $lastError)
+            Stop-AppProcessesInDestination
+            Start-Sleep -Seconds 1
+        }}
+    }}
+    throw "$Label failed after retries: $lastError"
+}}
+
 function Copy-DirectoryContents {{
     param(
         [string]$From,
@@ -536,6 +574,7 @@ function Copy-DirectoryContents {{
 try {{
     Write-UpdateLog 'Updater started.'
     Wait-AppExit
+    Stop-AppProcessesInDestination
 
     if (-not (Test-Path -LiteralPath (Join-Path -Path $Source -ChildPath '417ssh.exe'))) {{
         throw 'Update package does not contain 417ssh.exe.'
@@ -550,10 +589,10 @@ try {{
     New-Item -ItemType Directory -Force -Path $Backup | Out-Null
 
     Write-UpdateLog 'Backing up current application.'
-    Copy-DirectoryContents -From $Destination -To $Backup
+    Invoke-WithRetry -Label 'Backup' -Action {{ Copy-DirectoryContents -From $Destination -To $Backup }}
 
     Write-UpdateLog 'Copying new application files.'
-    Copy-DirectoryContents -From $Source -To $Destination
+    Invoke-WithRetry -Label 'Install copy' -Action {{ Copy-DirectoryContents -From $Source -To $Destination }}
 
     Write-UpdateLog 'Starting updated application.'
     Start-Process -FilePath $ExePath -WorkingDirectory $Destination
@@ -611,6 +650,8 @@ def launch_windows_update_script(script_path: Path) -> None:
     startupinfo = None
     if sys.platform == "win32":
         creationflags |= subprocess.CREATE_NEW_PROCESS_GROUP
+        if hasattr(subprocess, "CREATE_BREAKAWAY_FROM_JOB"):
+            creationflags |= subprocess.CREATE_BREAKAWAY_FROM_JOB
         if hasattr(subprocess, "CREATE_NO_WINDOW"):
             creationflags |= subprocess.CREATE_NO_WINDOW
         if hasattr(subprocess, "DETACHED_PROCESS"):
@@ -695,6 +736,18 @@ def status_color(status: str) -> str:
     return "#64706b"
 
 
+def workspace_palette(kind: str) -> tuple[str, str]:
+    if kind == "jupyter":
+        return "#2e5cc7", "#edf3ff"
+    if kind == "rstudio":
+        return "#058a7a", "#e9f7f4"
+    if kind == "terminal":
+        return "#c86f0a", "#fff4e6"
+    if kind == "sftp":
+        return "#805cbd", "#f3edff"
+    return "#64706b", "#f1f4f3"
+
+
 class StatusPill(QLabel):
     def __init__(self, text: str, color: str) -> None:
         super().__init__(text)
@@ -720,7 +773,7 @@ class ProfileRow(QFrame):
         self.setStyleSheet(self.row_style(selected, active))
 
         layout = QHBoxLayout(self)
-        layout.setContentsMargins(9, 8, 8, 8)
+        layout.setContentsMargins(8, 7, 8, 7)
         layout.setSpacing(8)
 
         icon_text = (
@@ -729,19 +782,20 @@ class ProfileRow(QFrame):
             else ("J" if profile.workspaceKind == "jupyter" else ("S" if profile.workspaceKind == "sftp" else ">_"))
         )
         icon = QLabel(icon_text)
-        icon.setFixedSize(30, 30)
+        icon.setFixedSize(28, 28)
         icon.setAlignment(Qt.AlignCenter)
+        accent, tint = workspace_palette(profile.workspaceKind)
         icon.setStyleSheet(
-            "background: #e7f3ee; color: #26734d; border-radius: 7px; font-weight: 700;"
+            "background: #e7f3ee; color: #26734d; border-radius: 7px; font-weight: 700; font-size: 12px;"
             if active
-            else "background: #eef1f2; color: #61716b; border-radius: 7px; font-weight: 700;"
+            else f"background: {tint}; color: {accent}; border-radius: 7px; font-weight: 700; font-size: 12px;"
         )
         layout.addWidget(icon)
 
         text_box = QVBoxLayout()
         text_box.setSpacing(2)
         title = QLabel(profile.name)
-        title.setStyleSheet("font-weight: 650;")
+        title.setStyleSheet("font-weight: 650; color: #1f2925;")
         title.setWordWrap(False)
         subtitle_text = (
             f"{profile.localPort} -> {profile.remoteHost}:{profile.remotePort}"
@@ -755,9 +809,10 @@ class ProfileRow(QFrame):
         layout.addLayout(text_box, 1)
 
         edit = QToolButton()
-        edit.setText("配置")
+        edit.setText("编辑")
         edit.setToolTip("修改配置")
         edit.setAutoRaise(True)
+        edit.setFixedHeight(24)
         edit.clicked.connect(lambda: self.edit_clicked.emit(profile.id))
         layout.addWidget(edit)
 
@@ -769,14 +824,14 @@ class ProfileRow(QFrame):
     @staticmethod
     def row_style(selected: bool, active: bool) -> str:
         if selected:
-            background = "#eaf2ff"
-            border = "#a9c3f5"
+            background = "#e9f0ff"
+            border = "#b7c9f4"
         elif active:
             background = "#e8f6ef"
             border = "#acdcbc"
         else:
-            background = "rgba(255,255,255,0.72)"
-            border = "rgba(80,95,90,0.14)"
+            background = "rgba(255,255,255,0.66)"
+            border = "rgba(74,88,83,0.16)"
         return f"#ProfileRow {{ background: {background}; border: 1px solid {border}; border-radius: 8px; }}"
 
 
@@ -2505,8 +2560,9 @@ class MainWindow(QMainWindow):
         sidebar_layout.setSpacing(10)
 
         header = QWidget()
+        header.setObjectName("SidebarHeader")
         header_layout = QHBoxLayout(header)
-        header_layout.setContentsMargins(4, 0, 4, 0)
+        header_layout.setContentsMargins(10, 9, 10, 9)
         header_layout.addWidget(make_logo(38))
         title_box = QVBoxLayout()
         title_box.setSpacing(1)
@@ -2525,7 +2581,7 @@ class MainWindow(QMainWindow):
         self.profile_holder = QWidget()
         self.profile_layout = QVBoxLayout(self.profile_holder)
         self.profile_layout.setContentsMargins(0, 0, 0, 0)
-        self.profile_layout.setSpacing(13)
+        self.profile_layout.setSpacing(10)
         self.profile_scroll.setWidget(self.profile_holder)
         sidebar_layout.addWidget(self.profile_scroll, 1)
 
@@ -2564,21 +2620,30 @@ class MainWindow(QMainWindow):
 
         self.setStyleSheet(
             """
-            QMainWindow { background: #f6f8f9; }
-            #Sidebar { background: #f2f6f5; border-right: 1px solid #dbe3e0; }
-            QPushButton { padding: 6px 10px; border-radius: 6px; border: 1px solid #c5d0cc; background: #ffffff; }
-            QPushButton:hover { background: #eef4f2; }
-            QPushButton:disabled { color: #98a29e; background: #f4f6f6; }
-            QPushButton[primary="true"] { background: #245fc7; color: white; border-color: #245fc7; font-weight: 650; }
-            QPushButton[primary="true"]:hover { background: #1f55b5; }
-            QToolButton { padding: 4px 7px; border-radius: 5px; }
-            QToolButton:hover { background: rgba(0,0,0,0.06); }
-            QLineEdit, QSpinBox, QComboBox { padding: 6px; border: 1px solid #c5d0cc; border-radius: 6px; background: white; }
-            QLineEdit:focus, QSpinBox:focus, QComboBox:focus { border-color: #8dacdf; }
-            QPlainTextEdit, QTextEdit, QTreeWidget { border: 1px solid #d0d9d6; border-radius: 8px; background: white; selection-background-color: #dce8ff; }
-            QTabWidget::pane { border: 1px solid #d0d9d6; border-radius: 8px; background: white; }
-            QTabBar::tab { padding: 7px 12px; border: 1px solid transparent; border-top-left-radius: 6px; border-top-right-radius: 6px; }
-            QTabBar::tab:selected { background: white; border-color: #d0d9d6; color: #245fc7; font-weight: 650; }
+            * { font-family: "Segoe UI", "Microsoft YaHei UI", Arial; font-size: 13px; }
+            QMainWindow { background: #f6f8f8; }
+            #Sidebar { background: #f4f8f7; border-right: 1px solid #dce4e1; }
+            #SidebarHeader { background: rgba(255,255,255,0.74); border: 1px solid rgba(92,108,101,0.18); border-radius: 8px; }
+            QPushButton { min-height: 26px; padding: 5px 10px; border-radius: 6px; border: 1px solid #c8d2ce; background: rgba(255,255,255,0.94); color: #1f2925; }
+            QPushButton:hover { background: #f6faf9; border-color: #b9c7c2; }
+            QPushButton:pressed { background: #edf3f1; }
+            QPushButton:disabled { color: #98a29e; background: #f4f6f6; border-color: #d9e0dd; }
+            QPushButton[primary="true"] { background: #2e5cc7; color: white; border-color: #2e5cc7; font-weight: 650; }
+            QPushButton[primary="true"]:hover { background: #2854b7; }
+            QPushButton::menu-indicator { width: 10px; }
+            QToolButton { padding: 3px 7px; border-radius: 5px; color: #5f6b66; }
+            QToolButton:hover { background: rgba(31,41,37,0.07); color: #1f2925; }
+            QLineEdit, QSpinBox, QComboBox { min-height: 26px; padding: 5px 7px; border: 1px solid #c8d2ce; border-radius: 6px; background: rgba(255,255,255,0.96); color: #1f2925; }
+            QLineEdit:focus, QSpinBox:focus, QComboBox:focus { border-color: #98b1e5; }
+            QPlainTextEdit, QTextEdit, QTreeWidget { border: 1px solid #d0d9d6; border-radius: 8px; background: rgba(255,255,255,0.96); selection-background-color: #dce8ff; }
+            QHeaderView::section { background: #f4f7f6; color: #5f6b66; padding: 5px 7px; border: 0; border-bottom: 1px solid #d8e1de; font-weight: 650; }
+            QTreeWidget::item { min-height: 22px; }
+            QTabWidget::pane { border: 1px solid #d0d9d6; border-radius: 8px; background: rgba(255,255,255,0.92); }
+            QTabBar::tab { padding: 6px 12px; border: 1px solid transparent; border-top-left-radius: 6px; border-top-right-radius: 6px; color: #5f6b66; }
+            QTabBar::tab:selected { background: white; border-color: #d0d9d6; color: #2e5cc7; font-weight: 650; }
+            QMenu { background: white; border: 1px solid #d0d9d6; border-radius: 6px; padding: 4px; }
+            QMenu::item { padding: 6px 22px 6px 10px; border-radius: 4px; }
+            QMenu::item:selected { background: #edf3ff; color: #2e5cc7; }
             """
         )
 
@@ -2968,12 +3033,12 @@ class MainWindow(QMainWindow):
         widget.setFrameShape(QFrame.NoFrame)
         holder = QWidget()
         layout = QVBoxLayout(holder)
-        layout.setContentsMargins(24, 24, 24, 24)
-        layout.setSpacing(14)
+        layout.setContentsMargins(18, 18, 18, 18)
+        layout.setSpacing(10)
 
         header = QHBoxLayout()
         title = QLabel(f"Hosts {side_label}")
-        title.setStyleSheet("font-size: 20px; font-weight: 780; color: #111827;")
+        title.setStyleSheet("font-size: 17px; font-weight: 760; color: #1f2925;")
         header.addWidget(title, 1)
         add_custom = QPushButton("新增自定义 SFTP")
         add_custom.clicked.connect(lambda _checked=False, selected_state=state: self.add_custom_sftp_source(workspace_profile, selected_state))
@@ -2983,7 +3048,7 @@ class MainWindow(QMainWindow):
         grid_holder = QWidget()
         grid = QGridLayout(grid_holder)
         grid.setContentsMargins(0, 0, 0, 0)
-        grid.setSpacing(14)
+        grid.setSpacing(10)
 
         sources = [("local", None, "127.0.0.1", "本地主机")]
         for source in self.sftp_source_profiles(exclude_profile_id=workspace_profile.id):
@@ -2992,26 +3057,25 @@ class MainWindow(QMainWindow):
 
         for index, (kind, profile_id, name, subtitle) in enumerate(sources):
             card = QFrame()
-            card.setMinimumHeight(86)
-            card.setStyleSheet("QFrame { border-radius: 8px; border: 1px solid #d6dfdc; background: white; }")
+            card.setMinimumHeight(70)
+            card.setStyleSheet("QFrame { border-radius: 8px; border: 1px solid #d6dfdc; background: rgba(255,255,255,0.92); }")
             card_layout = QHBoxLayout(card)
-            card_layout.setContentsMargins(10, 10, 10, 10)
+            card_layout.setContentsMargins(8, 8, 8, 8)
             select_button = QPushButton(f"{name}\n{subtitle}")
             select_button.setCursor(Qt.PointingHandCursor)
-            select_button.setMinimumHeight(64)
+            select_button.setMinimumHeight(54)
             select_button.setStyleSheet(
                 """
                 QPushButton {
                     text-align: left;
-                    padding: 10px 12px;
+                    padding: 8px 10px;
                     border-radius: 8px;
                     border: 0;
                     background: transparent;
-                    font-size: 15px;
+                    font-size: 13px;
                     font-weight: 700;
                 }
                 QPushButton:hover {
-                    border-color: #2b85ee;
                     background: #f7fbff;
                 }
                 """

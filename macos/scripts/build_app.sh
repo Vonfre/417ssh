@@ -4,7 +4,7 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 APP_NAME="417ssh"
 BUNDLE_ID="com.zhanghuan.417ssh"
-VERSION="${VERSION:-$(cat "$ROOT_DIR/VERSION" 2>/dev/null || echo "0.4.5")}"
+VERSION="${VERSION:-$(cat "$ROOT_DIR/VERSION" 2>/dev/null || echo "0.4.6")}"
 BUILD_DIR="$ROOT_DIR/build"
 APP_DIR="$BUILD_DIR/$APP_NAME.app"
 EXECUTABLE="$APP_DIR/Contents/MacOS/RemoteJupyterTunnel"

@@ -21,7 +21,7 @@
 417ssh-<版本>-win-portable.zip
 ```
 
-解压后进入 `417ssh` 文件夹，双击 `417ssh.exe` 运行。portable 版本不需要用户安装 Python。
+解压后进入 `417ssh` 文件夹，双击 `417ssh.exe` 运行。请保持 `417ssh.exe` 和 `_internal` 文件夹在一起，不要只移动 exe。portable 版本不需要用户安装 Python。
 
 配置保存在：
 
@@ -51,10 +51,10 @@ run_windows.bat
 .\build_windows.ps1
 ```
 
-生成文件：
+生成文件夹：
 
 ```text
-dist\417ssh.exe
+dist\417ssh\417ssh.exe
 ```
 
 ## 打包 portable zip
@@ -81,4 +81,5 @@ dist\417ssh-<版本>-win-portable.zip
 - SFTP 会按连接配置复用 SSH 连接；多个 SFTP 标签可以同时连接不同服务器，同一个服务器的连续目录和文件操作会复用连接。
 - 设置里可以检查 GitHub Releases 更新；检测到新版本后会下载 portable `.zip`，在后台自动解压、替换当前 portable 文件夹并重启，不会弹出命令行窗口。
 - Windows 自动更新会先备份当前 portable 文件夹；如果替换失败，会尝试回滚并重启原版本。
+- `0.4.5` 之前的旧版更新器可能会弹出 `find "<PID>"` 命令行并中断更新；从这些旧版本升级时请手动下载新版 zip 覆盖一次，之后再使用设置里的自动更新。
 - 发布新版本时，release asset 使用 `417ssh-<版本>-win-portable.zip` 命名。

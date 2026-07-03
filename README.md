@@ -11,7 +11,7 @@
 | 平台 | 下载文件 | 使用方式 |
 | --- | --- | --- |
 | macOS | `417ssh-<版本>-mac-app.zip` | 解压后运行 `417ssh.app` |
-| Windows | `417ssh-<版本>-win-portable.zip` | 解压后运行 `417ssh.exe` |
+| Windows | `417ssh-<版本>-win-portable.zip` | 解压后运行 `417ssh` 文件夹里的 `417ssh.exe` |
 
 不要点击 GitHub 的 `Code -> Download ZIP` 当作应用下载。那个 zip 是源码包，不能直接当桌面应用运行。
 
@@ -30,7 +30,7 @@ macOS 版本使用系统自带的 `/usr/bin/ssh` 建立隧道和终端连接。
 
 1. 下载 `417ssh-<版本>-win-portable.zip`。
 2. 解压后进入 `417ssh` 文件夹。
-3. 双击 `417ssh.exe` 运行。
+3. 双击 `417ssh.exe` 运行，不要把 exe 单独移出文件夹。
 
 Windows portable 版本不需要安装 Python。配置文件保存在：
 
@@ -92,7 +92,8 @@ windows/    Windows 版本，Python + PySide6/Qt + Paramiko
 
 - macOS 版本以 app zip 分发；解压后得到的 `.app` 就是可运行应用，后续可在设置里直接更新。
 - 当前 macOS 包尚未做 Apple Developer ID 公证，首次双击可能触发 Gatekeeper 提示；按上面的右键打开步骤即可继续。
-- Windows 版本以 portable zip 分发；解压后运行 `417ssh.exe`，后续可在设置里直接更新，安装阶段会在后台替换 portable 文件夹并自动重启。
+- Windows 版本以 portable zip 文件夹分发；解压后运行 `417ssh.exe`，后续可在设置里直接更新，安装阶段会在后台替换 portable 文件夹并自动重启。
+- 如果你正在从 `0.4.5` 之前的 Windows 版升级，旧版更新器可能会弹出 `find "<PID>"` 命令行并中断；请手动下载新版 zip 覆盖一次，之后的版本会使用新的后台更新器。
 - SSH 密码会随连接配置保存在应用配置里；如果不填写密码，应用会使用密钥或本机 SSH agent。
 - 连接配置保存在本机用户目录，不会写入 GitHub 仓库或发布包。
 - 旧版本或外部终端里已经启动的隧道不会被自动接管；如果端口被占用，可以在应用里关闭占用后重连。
