@@ -202,11 +202,14 @@ jobs:
           417ssh $VERSION portable packages.
 
           Highlights:
+          - Windows now keeps Jupyter/RStudio tunnels and terminal sessions per workspace, matching the macOS behavior when switching between workspaces.
+          - Windows built-in terminal now accepts keyboard input directly in the terminal pane through the SSH PTY, with Ctrl-C, paste, arrow keys, and PTY resize support.
+          - Windows terminal output is cleaned of common ANSI/OSC control sequences while still tracking OSC 7 and typed \`cd ...\` commands for SFTP directory sync.
           - Windows portable startup now bundles the dynamically loaded core module dependencies, including uuid, tkinter, and Paramiko.
           - Terminal SFTP path-to-terminal now inserts \`cd <path>\`, so pressing Enter in the terminal enters that directory directly.
           - Sync-to-terminal-folder and auto-sync no longer inject a visible \`printf ...\` probe into the shell.
           - Auto-sync follows terminal \`cd ...\` commands and OSC 7 current-directory reports, then refreshes the SFTP side panel.
-          - Workspace switching now keeps terminal sessions and SFTP browser state alive instead of tearing down the file panes when you leave the page.
+          - Workspace switching now keeps web tunnels, terminal sessions, and SFTP browser state alive instead of tearing down connections when you leave the page.
           - Terminal workspaces add three SFTP side-panel actions: copy the current SFTP path into the terminal, sync the SFTP pane to the terminal folder, and auto-sync with terminal folder changes.
           - Terminal SFTP side panels keep per-profile path, listing, filter, cached directory, and connection state so another workspace does not overwrite the active file browser.
           - The built-in SFTP workspace is named SFTP, and Hosts start with local host only; terminal workspaces appear there automatically, while extra SFTP sources are created through Add custom SFTP.

@@ -79,7 +79,7 @@ def app_version() -> str:
         text = version_file.read_text(encoding="utf-8").strip()
         if text:
             return text
-    return "0.4.2"
+    return "0.4.3"
 
 
 CURRENT_VERSION = app_version()
@@ -532,10 +532,10 @@ def launch_windows_update_script(script_path: Path) -> None:
 
 
 class Bridge(QObject):
-    tunnel_log = Signal(str)
-    tunnel_status = Signal(str, object)
-    terminal_output = Signal(str)
-    terminal_status = Signal(str, object)
+    tunnel_log = Signal(str, str)
+    tunnel_status = Signal(str, str, object)
+    terminal_output = Signal(str, str)
+    terminal_status = Signal(str, str, object)
     sftp_done = Signal(str, list, str)
     sftp_error = Signal(str, str)
     sftp_status = Signal(str, str)
@@ -1138,6 +1138,90 @@ class RemoteFileTreeItem(QTreeWidgetItem):
         if left == right:
             return str(self.data(0, Qt.UserRole + 2)) < str(other.data(0, Qt.UserRole + 2))
         return left < right
+
+
+class InteractiveTerminal(QPlainTextEdit):
+    def __init__(self, controller: "MainWindow", profile_id: str, active: bool) -> None:
+        super().__init__()
+        self.controller = controller
+        self.profile_id = profile_id
+        self.active = active
+        self.setReadOnly(True)
+        self.setUndoRedoEnabled(False)
+        self.setAcceptDrops(False)
+        self.setFont(QFont("Consolas", 10))
+        self.setStyleSheet("background: #101418; color: #e4e8ec; border-radius: 6px;")
+        self.setPlainText(controller.terminal_text_for(profile_id) if active else "")
+        self.moveCursor(QTextCursor.End)
+        self.setFocusPolicy(Qt.StrongFocus)
+
+    def keyPressEvent(self, event) -> None:
+        if not self.active:
+            super().keyPressEvent(event)
+            return
+
+        key = event.key()
+        modifiers = event.modifiers()
+        ctrl = bool(modifiers & Qt.ControlModifier)
+        shift = bool(modifiers & Qt.ShiftModifier)
+
+        if ctrl and shift and key == Qt.Key_C:
+            self.copy()
+            return
+        if (ctrl and key == Qt.Key_V) or (ctrl and shift and key == Qt.Key_V):
+            text = QApplication.clipboard().text()
+            if text:
+                normalized = text.replace("\r\n", "\n").replace("\r", "\n").replace("\n", "\r")
+                self.controller.send_terminal_input(self.profile_id, normalized)
+            return
+        if ctrl and key == Qt.Key_C:
+            self.controller.send_terminal_input(self.profile_id, "\x03", record_input=False)
+            return
+        if ctrl and key == Qt.Key_D:
+            self.controller.send_terminal_input(self.profile_id, "\x04", record_input=False)
+            return
+        if ctrl and key == Qt.Key_L:
+            self.controller.send_terminal_input(self.profile_id, "\x0c", record_input=False)
+            return
+
+        special_keys = {
+            Qt.Key_Return: "\r",
+            Qt.Key_Enter: "\r",
+            Qt.Key_Backspace: "\x7f",
+            Qt.Key_Tab: "\t",
+            Qt.Key_Escape: "\x1b",
+            Qt.Key_Up: "\x1b[A",
+            Qt.Key_Down: "\x1b[B",
+            Qt.Key_Right: "\x1b[C",
+            Qt.Key_Left: "\x1b[D",
+            Qt.Key_Home: "\x1b[H",
+            Qt.Key_End: "\x1b[F",
+            Qt.Key_Delete: "\x1b[3~",
+            Qt.Key_PageUp: "\x1b[5~",
+            Qt.Key_PageDown: "\x1b[6~",
+        }
+        if key in special_keys:
+            record_input = key in {Qt.Key_Return, Qt.Key_Enter, Qt.Key_Backspace, Qt.Key_Tab}
+            self.controller.send_terminal_input(self.profile_id, special_keys[key], record_input=record_input)
+            return
+
+        text = event.text()
+        if text:
+            self.controller.send_terminal_input(self.profile_id, text)
+            return
+
+        super().keyPressEvent(event)
+
+    def mousePressEvent(self, event) -> None:
+        self.setFocus()
+        self.moveCursor(QTextCursor.End)
+        super().mousePressEvent(event)
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        columns = max(40, int(self.viewport().width() / 8))
+        rows = max(10, int(self.viewport().height() / 18))
+        self.controller.resize_terminal(self.profile_id, columns, rows)
 
 
 class SFTPPaneState:
@@ -2059,15 +2143,14 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.store = ProfileStore()
         self.bridge = Bridge()
-        self.tunnel: TunnelServer | None = None
-        self.tunnel_profile_id: str | None = None
-        self.tunnel_status = "disconnected"
-        self.tunnel_message: str | None = None
-        self.tunnel_log_text = ""
-        self.terminal: TerminalSession | None = None
-        self.terminal_profile_id: str | None = None
-        self.terminal_status = "disconnected"
-        self.terminal_text = ""
+        self.tunnels: dict[str, TunnelServer] = {}
+        self.tunnel_status_by_profile: dict[str, str] = {}
+        self.tunnel_message_by_profile: dict[str, str | None] = {}
+        self.tunnel_log_text_by_profile: dict[str, str] = {}
+        self.terminals: dict[str, TerminalSession] = {}
+        self.terminal_status_by_profile: dict[str, str] = {}
+        self.terminal_text_by_profile: dict[str, str] = {}
+        self.terminal_input_buffers_by_profile: dict[str, str] = {}
         self.sftp_status = "文件空闲"
         self.remote_entries: list[RemoteFileEntry] = []
         self.current_remote_path = "."
@@ -2240,10 +2323,22 @@ class MainWindow(QMainWindow):
 
     def is_profile_active(self, profile: SSHProfile) -> bool:
         if profile.is_web_workspace:
-            return self.tunnel_profile_id == profile.id and self.tunnel_status in {"connecting", "connected"}
+            return self.tunnel_status_for(profile.id) in {"connecting", "connected"}
         if profile.workspaceKind == "sftp":
             return False
-        return self.terminal_profile_id == profile.id and self.terminal_status in {"connecting", "connected"}
+        return self.terminal_status_for(profile.id) in {"connecting", "connected"}
+
+    def tunnel_status_for(self, profile_id: str) -> str:
+        return self.tunnel_status_by_profile.get(profile_id, "disconnected")
+
+    def tunnel_log_for(self, profile_id: str) -> str:
+        return self.tunnel_log_text_by_profile.get(profile_id, "")
+
+    def terminal_status_for(self, profile_id: str) -> str:
+        return self.terminal_status_by_profile.get(profile_id, "disconnected")
+
+    def terminal_text_for(self, profile_id: str) -> str:
+        return self.terminal_text_by_profile.get(profile_id, "")
 
     def select_profile(self, profile_id: str) -> None:
         self.save_current_terminal_file_state()
@@ -2303,13 +2398,14 @@ class MainWindow(QMainWindow):
         return button
 
     def render_web_workspace(self, profile: SSHProfile) -> None:
+        tunnel_status = self.tunnel_status_for(profile.id)
         status_text = {
             "disconnected": "未连接",
             "connecting": "连接中",
             "connected": "已连接",
             "failed": "连接失败",
-        }.get(self.tunnel_status, "未连接")
-        self.detail_layout.addWidget(self.header(profile, status_text, status_color(self.tunnel_status)))
+        }.get(tunnel_status, "未连接")
+        self.detail_layout.addWidget(self.header(profile, status_text, status_color(tunnel_status)))
 
         container = QWidget()
         layout = QVBoxLayout(container)
@@ -2317,16 +2413,16 @@ class MainWindow(QMainWindow):
         layout.setSpacing(10)
 
         controls = QHBoxLayout()
-        if self.tunnel_profile_id != profile.id:
+        if tunnel_status == "disconnected":
             workspace_status_text = f"{profile.workspace_title} 未连接"
             workspace_status_color = "#64706b"
-        elif self.tunnel_status == "connecting":
+        elif tunnel_status == "connecting":
             workspace_status_text = f"{profile.workspace_title} 正在连接"
             workspace_status_color = "#b96200"
-        elif self.tunnel_status == "connected":
+        elif tunnel_status == "connected":
             workspace_status_text = f"{profile.workspace_title} 已连接"
             workspace_status_color = "#158a4b"
-        elif self.tunnel_status == "failed":
+        elif tunnel_status == "failed":
             workspace_status_text = f"{profile.workspace_title} 连接失败"
             workspace_status_color = "#c23535"
         else:
@@ -2343,10 +2439,10 @@ class MainWindow(QMainWindow):
         controls.addWidget(config)
         reload_button = QPushButton("刷新")
         reload_button.clicked.connect(lambda: self.load_web_url(profile))
-        reload_button.setEnabled(self.tunnel_profile_id == profile.id and self.tunnel_status == "connected")
+        reload_button.setEnabled(tunnel_status == "connected")
         controls.addWidget(reload_button)
         connect = QPushButton("断开" if self.is_profile_active(profile) else "连接")
-        connect.clicked.connect(lambda: self.disconnect_tunnel() if self.is_profile_active(profile) else self.connect_tunnel(profile))
+        connect.clicked.connect(lambda: self.disconnect_tunnel(profile, update_ui=True) if self.is_profile_active(profile) else self.connect_tunnel(profile))
         controls.addWidget(self.set_primary(connect))
         layout.addLayout(controls)
 
@@ -2354,7 +2450,7 @@ class MainWindow(QMainWindow):
         browser = QWidget()
         browser_layout = QVBoxLayout(browser)
         browser_layout.setContentsMargins(0, 0, 0, 0)
-        if QWebEngineView is not None and self.tunnel_profile_id == profile.id and self.tunnel_status == "connected":
+        if QWebEngineView is not None and tunnel_status == "connected":
             self.current_webview = QWebEngineView()
             browser_layout.addWidget(self.current_webview, 1)
             self.load_web_url(profile)
@@ -2378,53 +2474,63 @@ class MainWindow(QMainWindow):
 
         log = QPlainTextEdit()
         log.setReadOnly(True)
-        log.setPlainText(self.tunnel_log_text or "暂无日志。")
+        log.setPlainText(self.tunnel_log_for(profile.id) or "暂无日志。")
         log.setFont(QFont("Consolas", 10))
+        log.setProperty("profile_id", profile.id)
         self.tunnel_log_widget = log
         tabs.addTab(log, "日志")
         layout.addWidget(tabs, 1)
         self.detail_layout.addWidget(container, 1)
 
     def connect_tunnel(self, profile: SSHProfile) -> None:
-        self.disconnect_tunnel(update_ui=False)
-        self.tunnel_profile_id = profile.id
-        self.tunnel_status = "connecting"
-        self.tunnel_log_text = ""
-        self.tunnel = TunnelServer(profile, self.bridge.tunnel_log.emit, self.bridge.tunnel_status.emit)
-        self.tunnel.start()
+        self.disconnect_tunnel(profile, update_ui=False)
+        self.tunnel_status_by_profile[profile.id] = "connecting"
+        self.tunnel_log_text_by_profile[profile.id] = ""
+        tunnel = TunnelServer(
+            profile,
+            lambda text, profile_id=profile.id: self.bridge.tunnel_log.emit(profile_id, text),
+            lambda status, message, profile_id=profile.id: self.bridge.tunnel_status.emit(profile_id, status, message),
+        )
+        self.tunnels[profile.id] = tunnel
+        tunnel.start()
         self.refresh_sidebar()
         self.render_selected_profile()
 
-    def disconnect_tunnel(self, update_ui: bool = True) -> None:
-        if self.tunnel is not None:
-            self.tunnel.stop()
-            self.tunnel = None
-        self.tunnel_profile_id = None
-        self.tunnel_status = "disconnected"
+    def disconnect_tunnel(self, profile: SSHProfile | None = None, update_ui: bool = True) -> None:
+        profile_ids = [profile.id] if profile is not None else list(self.tunnels.keys())
+        for profile_id in profile_ids:
+            tunnel = self.tunnels.pop(profile_id, None)
+            if tunnel is not None:
+                tunnel.stop()
+            self.tunnel_status_by_profile[profile_id] = "disconnected"
+            self.tunnel_message_by_profile.pop(profile_id, None)
         if update_ui:
             self.refresh_sidebar()
             self.render_selected_profile()
 
-    def append_tunnel_log(self, text: str) -> None:
-        self.tunnel_log_text = (self.tunnel_log_text + text.rstrip() + "\n")[-80000:]
+    def append_tunnel_log(self, profile_id: str, text: str) -> None:
+        log_text = (self.tunnel_log_text_by_profile.get(profile_id, "") + text.rstrip() + "\n")[-80000:]
+        self.tunnel_log_text_by_profile[profile_id] = log_text
         widget = getattr(self, "tunnel_log_widget", None)
-        if widget is not None:
-            widget.setPlainText(self.tunnel_log_text)
+        if widget is not None and widget.property("profile_id") == profile_id:
+            widget.setPlainText(log_text)
             widget.moveCursor(QTextCursor.End)
 
-    def handle_tunnel_status(self, status: str, message: object) -> None:
-        old = self.tunnel_status
-        self.tunnel_status = status
-        self.tunnel_message = str(message) if message else None
+    def handle_tunnel_status(self, profile_id: str, status: str, message: object) -> None:
+        old = self.tunnel_status_for(profile_id)
+        self.tunnel_status_by_profile[profile_id] = status
+        self.tunnel_message_by_profile[profile_id] = str(message) if message else None
         if status == "connected" and old != "connected":
-            active = next((item for item in self.store.profiles if item.id == self.tunnel_profile_id), self.selected_profile())
+            active = self.profile_by_id(profile_id)
             if active is not None:
                 if QWebEngineView is None:
                     webbrowser.open(active.local_url)
                 else:
-                    QTimer.singleShot(100, lambda: self.load_web_url(active))
-        if status == "failed":
-            self.tunnel_profile_id = None
+                    selected = self.selected_profile()
+                    if selected is not None and selected.id == profile_id:
+                        QTimer.singleShot(100, lambda selected_profile=active: self.load_web_url(selected_profile))
+        if status in {"failed", "disconnected"}:
+            self.tunnels.pop(profile_id, None)
         self.refresh_sidebar()
         self.render_selected_profile()
 
@@ -2740,7 +2846,7 @@ class MainWindow(QMainWindow):
 
     def render_terminal(self, profile: SSHProfile) -> None:
         self.load_terminal_file_state(profile)
-        terminal_status = self.terminal_status if self.terminal_profile_id == profile.id else "disconnected"
+        terminal_status = self.terminal_status_for(profile.id)
         status_text = {
             "disconnected": "终端未连接",
             "connecting": "终端连接中",
@@ -2771,7 +2877,7 @@ class MainWindow(QMainWindow):
         controls.addWidget(native)
         controls.addStretch(1)
         connect = QPushButton("断开终端" if self.is_profile_active(profile) else "连接终端")
-        connect.clicked.connect(lambda: self.disconnect_terminal() if self.is_profile_active(profile) else self.connect_terminal(profile))
+        connect.clicked.connect(lambda: self.disconnect_terminal(profile, update_ui=True) if self.is_profile_active(profile) else self.connect_terminal(profile))
         controls.addWidget(self.set_primary(connect))
         layout.addLayout(controls)
 
@@ -2844,29 +2950,16 @@ class MainWindow(QMainWindow):
         clear.setEnabled(active)
         top.addWidget(clear)
         ctrl_c = QPushButton("中断")
-        ctrl_c.clicked.connect(lambda: self.send_terminal_text("\x03"))
+        ctrl_c.clicked.connect(lambda: self.send_terminal_text(profile, "\x03", record_input=False))
         ctrl_c.setEnabled(active)
         top.addWidget(ctrl_c)
         layout.addLayout(top)
 
-        self.terminal_widget = QPlainTextEdit()
-        self.terminal_widget.setPlainText(self.terminal_text if active else "")
-        self.terminal_widget.setFont(QFont("Consolas", 10))
-        self.terminal_widget.setStyleSheet("background: #101418; color: #e4e8ec; border-radius: 6px;")
+        self.terminal_widget = InteractiveTerminal(self, profile.id, active)
+        self.terminal_widget.setProperty("profile_id", profile.id)
         self.terminal_widget.moveCursor(QTextCursor.End)
         layout.addWidget(self.terminal_widget, 1)
 
-        command_row = QHBoxLayout()
-        self.command_input = QLineEdit()
-        self.command_input.setPlaceholderText("输入命令后回车")
-        self.command_input.returnPressed.connect(self.send_command_line)
-        self.command_input.setEnabled(active)
-        command_row.addWidget(self.command_input, 1)
-        send = QPushButton("发送")
-        send.clicked.connect(self.send_command_line)
-        send.setEnabled(active)
-        command_row.addWidget(send)
-        layout.addLayout(command_row)
         return pane
 
     def file_pane(self, profile: SSHProfile) -> QWidget:
@@ -2927,7 +3020,7 @@ class MainWindow(QMainWindow):
         terminal_sync_row.setSpacing(6)
         copy_path = QToolButton()
         copy_path.setText("路径到终端")
-        copy_path.setToolTip("将 cd 当前 SFTP 目录放到终端输入框，回车后进入该目录")
+        copy_path.setToolTip("将 cd 当前 SFTP 目录输入到终端，回车后进入该目录")
         copy_path.clicked.connect(lambda _checked=False, selected_profile=profile: self.copy_sftp_path_to_terminal(selected_profile))
         terminal_sync_row.addWidget(copy_path)
         sync_path = QToolButton()
@@ -2958,40 +3051,54 @@ class MainWindow(QMainWindow):
         return pane
 
     def connect_terminal(self, profile: SSHProfile) -> None:
-        self.disconnect_terminal(update_ui=False)
-        self.terminal_profile_id = profile.id
-        self.terminal_status = "connecting"
-        self.terminal_text = ""
-        self.terminal = TerminalSession(profile, self.bridge.terminal_output.emit, self.bridge.terminal_status.emit)
-        self.terminal.start()
+        self.disconnect_terminal(profile, update_ui=False)
+        self.terminal_status_by_profile[profile.id] = "connecting"
+        self.terminal_text_by_profile[profile.id] = ""
+        self.terminal_input_buffers_by_profile[profile.id] = ""
+        terminal = TerminalSession(
+            profile,
+            lambda text, profile_id=profile.id: self.bridge.terminal_output.emit(profile_id, text),
+            lambda status, message, profile_id=profile.id: self.bridge.terminal_status.emit(profile_id, status, message),
+        )
+        self.terminals[profile.id] = terminal
+        terminal.start()
         self.refresh_sidebar()
         self.render_selected_profile()
 
-    def disconnect_terminal(self, update_ui: bool = True) -> None:
-        if self.terminal is not None:
-            self.terminal.close()
-            self.terminal = None
-        self.terminal_profile_id = None
-        self.terminal_status = "disconnected"
+    def disconnect_terminal(self, profile: SSHProfile | None = None, update_ui: bool = True) -> None:
+        profile_ids = [profile.id] if profile is not None else list(self.terminals.keys())
+        for profile_id in profile_ids:
+            terminal = self.terminals.pop(profile_id, None)
+            if terminal is not None:
+                terminal.close()
+            self.terminal_status_by_profile[profile_id] = "disconnected"
+            self.terminal_input_buffers_by_profile.pop(profile_id, None)
         if update_ui:
             self.refresh_sidebar()
             self.render_selected_profile()
 
-    def append_terminal_output(self, text: str) -> None:
-        text = self.extract_terminal_directory_updates(text)
-        self.terminal_text = (self.terminal_text + text)[-100000:]
+    def append_terminal_output(self, profile_id: str, text: str) -> None:
+        text = self.extract_terminal_directory_updates(profile_id, text)
+        previous = self.terminal_text_by_profile.get(profile_id, "")
+        rendered = self.apply_terminal_output(previous, self.strip_terminal_control_sequences(text))[-100000:]
+        self.terminal_text_by_profile[profile_id] = rendered
         widget = getattr(self, "terminal_widget", None)
-        if widget is not None:
-            widget.setPlainText(self.terminal_text)
+        if widget is not None and widget.property("profile_id") == profile_id:
+            current = widget.toPlainText()
+            if rendered.startswith(current):
+                widget.moveCursor(QTextCursor.End)
+                widget.insertPlainText(rendered[len(current) :])
+            else:
+                widget.setPlainText(rendered)
             widget.moveCursor(QTextCursor.End)
 
-    def extract_terminal_directory_updates(self, text: str) -> str:
+    def extract_terminal_directory_updates(self, profile_id: str, text: str) -> str:
         def update(match: re.Match[str]) -> str:
             payload = match.group(1)
             path = self.path_from_osc7_payload(payload)
-            if path and self.terminal_profile_id:
-                self.terminal_directories_by_profile[self.terminal_profile_id] = path
-                profile = self.profile_by_id(self.terminal_profile_id)
+            if path:
+                self.terminal_directories_by_profile[profile_id] = path
+                profile = self.profile_by_id(profile_id)
                 should_sync = (
                     profile is not None
                     and (
@@ -3006,6 +3113,33 @@ class MainWindow(QMainWindow):
 
         return re.sub(r"\x1b]7;([^\x07\x1b]*)(?:\x07|\x1b\\)", update, text)
 
+    def strip_terminal_control_sequences(self, text: str) -> str:
+        text = re.sub(r"\x1b\][^\x07]*(?:\x07|\x1b\\)", "", text)
+        text = re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", "", text)
+        text = re.sub(r"\x1b[()][A-Za-z0-9]", "", text)
+        text = re.sub(r"\x1b[=>]", "", text)
+        return text
+
+    def apply_terminal_output(self, buffer: str, chunk: str) -> str:
+        index = 0
+        while index < len(chunk):
+            character = chunk[index]
+            if character == "\r":
+                if index + 1 >= len(chunk) or chunk[index + 1] != "\n":
+                    line_start = buffer.rfind("\n") + 1
+                    buffer = buffer[:line_start]
+            elif character in {"\b", "\x7f"}:
+                if buffer and not buffer.endswith("\n"):
+                    buffer = buffer[:-1]
+            elif character == "\x0c":
+                buffer = ""
+            elif character == "\a":
+                pass
+            else:
+                buffer += character
+            index += 1
+        return buffer
+
     def path_from_osc7_payload(self, payload: str) -> str:
         if payload.startswith("file://"):
             without_scheme = payload[len("file://"):]
@@ -3015,50 +3149,66 @@ class MainWindow(QMainWindow):
             return ""
         return urllib.parse.unquote(payload)
 
-    def handle_terminal_status(self, status: str, message: object) -> None:
-        self.terminal_status = status
+    def handle_terminal_status(self, profile_id: str, status: str, message: object) -> None:
+        self.terminal_status_by_profile[profile_id] = status
         if status in {"failed", "disconnected"}:
-            self.terminal_profile_id = None
+            self.terminals.pop(profile_id, None)
         if message:
-            self.append_terminal_output(str(message) + "\n")
+            self.append_terminal_output(profile_id, str(message) + "\n")
         self.refresh_sidebar()
         self.render_selected_profile()
 
     def clear_terminal(self) -> None:
-        self.terminal_text = ""
+        profile = self.selected_profile()
+        if profile is None:
+            return
+        self.terminal_text_by_profile[profile.id] = ""
         widget = getattr(self, "terminal_widget", None)
-        if widget is not None:
+        if widget is not None and widget.property("profile_id") == profile.id:
             widget.clear()
 
-    def send_terminal_text(self, text: str) -> None:
-        if self.terminal is None or self.terminal_status != "connected":
+    def send_terminal_input(self, profile_id: str, text: str, record_input: bool = True) -> None:
+        terminal = self.terminals.get(profile_id)
+        if terminal is None or self.terminal_status_for(profile_id) != "connected":
             QMessageBox.information(self, APP_NAME, "请先连接终端。")
             return
-        self.terminal.send(text)
+        terminal.send(text)
+        if record_input:
+            self.record_terminal_input(profile_id, text)
+
+    def send_terminal_text(self, profile: SSHProfile, text: str, record_input: bool = True) -> None:
+        self.send_terminal_input(profile.id, text, record_input=record_input)
+
+    def resize_terminal(self, profile_id: str, columns: int, rows: int) -> None:
+        terminal = self.terminals.get(profile_id)
+        if terminal is not None and hasattr(terminal, "resize"):
+            terminal.resize(columns, rows)
 
     def send_command_line(self) -> None:
-        text = self.command_input.text()
+        command_input = getattr(self, "command_input", None)
+        if command_input is None:
+            return
+        text = command_input.text()
         if not text:
             return
-        self.send_terminal_text(text + "\n")
-        self.command_input.clear()
-        if self.terminal_profile_id:
-            self.record_terminal_directory_command(self.terminal_profile_id, text)
+        profile = self.selected_profile()
+        if profile is None:
+            return
+        self.send_terminal_text(profile, text + "\r")
+        command_input.clear()
 
     def copy_sftp_path_to_terminal(self, profile: SSHProfile) -> None:
-        if self.terminal_profile_id != profile.id or self.terminal_status != "connected":
+        if self.terminal_status_for(profile.id) != "connected":
             QMessageBox.information(self, APP_NAME, "请先连接当前终端。")
             return
         command = f"cd {shlex.quote(self.current_remote_path or '.')}"
-        command_input = getattr(self, "command_input", None)
-        if command_input is not None:
-            command_input.setText(command)
-            command_input.setFocus()
-        else:
-            self.send_terminal_text(command)
+        self.send_terminal_text(profile, command)
+        widget = getattr(self, "terminal_widget", None)
+        if widget is not None and widget.property("profile_id") == profile.id:
+            widget.setFocus()
 
     def sync_sftp_to_terminal_directory(self, profile: SSHProfile) -> None:
-        if self.terminal_profile_id != profile.id or self.terminal_status != "connected":
+        if self.terminal_status_for(profile.id) != "connected":
             QMessageBox.information(self, APP_NAME, "请先连接当前终端。")
             return
         directory = self.terminal_directories_by_profile.get(profile.id)
@@ -3079,6 +3229,24 @@ class MainWindow(QMainWindow):
 
     def request_terminal_directory(self) -> None:
         return
+
+    def record_terminal_input(self, profile_id: str, text: str) -> None:
+        buffer = self.terminal_input_buffers_by_profile.get(profile_id, "")
+        for character in text:
+            if character in {"\r", "\n"}:
+                command = buffer.strip()
+                buffer = ""
+                if command:
+                    self.record_terminal_directory_command(profile_id, command)
+            elif character in {"\b", "\x7f"}:
+                buffer = buffer[:-1]
+            elif character == "\x03":
+                buffer = ""
+            elif character == "\t":
+                buffer += " "
+            elif ord(character) >= 32:
+                buffer += character
+        self.terminal_input_buffers_by_profile[profile_id] = buffer[-4096:]
 
     def record_terminal_directory_command(self, profile_id: str, command: str) -> None:
         directory = self.directory_after_cd_command(profile_id, command)

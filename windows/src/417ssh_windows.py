@@ -753,6 +753,14 @@ class TerminalSession:
         except Exception as exc:
             self.output(f"\n发送失败：{exc}\n")
 
+    def resize(self, columns: int, rows: int) -> None:
+        if self.channel is None:
+            return
+        try:
+            self.channel.resize_pty(width=max(40, columns), height=max(10, rows))
+        except Exception:
+            pass
+
     def close(self) -> None:
         self.stop_event.set()
         if self.channel is not None:
