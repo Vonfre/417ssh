@@ -40,7 +40,7 @@ final class SFTPManager: ObservableObject {
             case .idle:
                 return "文件空闲"
             case .running:
-                return "文件处理中"
+                return "文件同步中"
             case .completed:
                 return "文件完成"
             case .failed:
@@ -73,8 +73,18 @@ final class SFTPManager: ObservableObject {
     private var directoryCache: [String: DirectorySnapshot] = [:]
 
     func upload(profile: SSHProfile, localPath: String, remotePath: String) {
-        let recursiveFlag = isLocalDirectory(localPath) ? "-r " : ""
-        let command = "put \(recursiveFlag)\(sftpQuote(localPath)) \(sftpQuote(remotePath))"
+        upload(profile: profile, localPaths: [localPath], remotePath: remotePath)
+    }
+
+    func upload(profile: SSHProfile, localPaths: [String], remotePath: String) {
+        let commands = localPaths
+            .map { localPath in
+                let recursiveFlag = isLocalDirectory(localPath) ? "-r " : ""
+                return "put \(recursiveFlag)\(sftpQuote(localPath)) \(sftpQuote(remotePath))"
+            }
+            .joined(separator: "\n")
+        guard !commands.isEmpty else { return }
+        let command = commands
         runSFTP(command: command, profile: profile, title: "上传", operation: .transfer(refreshProfile: profile, refreshPath: remotePath, completion: nil))
     }
 
@@ -231,6 +241,78 @@ final class SFTPManager: ObservableObject {
         runRemoteFileCommand(script: script, profile: profile, title: "修改权限", refreshPath: refreshPath)
     }
 
+    func copyRemotePath(profile: SSHProfile, sourcePath: String, targetDirectory: String, refreshPath: String) {
+        guard canStartFileCommand else { return }
+        let script = """
+        src=\(shellQuote(sourcePath))
+        target_dir=\(shellQuote(normalizedRemotePath(targetDirectory)))
+        if [ "$src" = "/" ] || [ -z "$src" ]; then
+          printf 'ERROR\\t不能复制这个路径：%s\\0' "$src"
+          exit 2
+        fi
+        if [ ! -e "$src" ] && [ ! -L "$src" ]; then
+          printf 'ERROR\\t源文件不存在：%s\\0' "$src"
+          exit 2
+        fi
+        if [ ! -d "$target_dir" ]; then
+          printf 'ERROR\\t目标目录不存在：%s\\0' "$target_dir"
+          exit 2
+        fi
+        base=$(basename "$src")
+        if [ -e "$target_dir/$base" ] || [ -L "$target_dir/$base" ]; then
+          printf 'ERROR\\t目标目录中已存在：%s\\0' "$base"
+          exit 2
+        fi
+        if cp -a -- "$src" "$target_dir/"; then
+          printf 'OK\\t复制完成\\0'
+        else
+          printf 'ERROR\\t复制失败：%s\\0' "$src"
+          exit 1
+        fi
+        """
+        runRemoteFileCommand(script: script, profile: profile, title: "拖拽复制", refreshPath: refreshPath)
+    }
+
+    func transferRemoteEntry(
+        sourceProfile: SSHProfile,
+        payload: RemoteFileDragPayload,
+        targetProfile: SSHProfile,
+        targetDirectory: String
+    ) {
+        if sourceProfile.id == targetProfile.id {
+            copyRemotePath(
+                profile: targetProfile,
+                sourcePath: payload.path,
+                targetDirectory: targetDirectory,
+                refreshPath: targetDirectory
+            )
+            return
+        }
+
+        guard canStartFileCommand else { return }
+
+        do {
+            let temporaryDirectory = FileManager.default.temporaryDirectory
+                .appendingPathComponent("417ssh-transfer-\(UUID().uuidString)", isDirectory: true)
+            try FileManager.default.createDirectory(at: temporaryDirectory, withIntermediateDirectories: true)
+            let localURL = temporaryDirectory.appendingPathComponent(payload.name.isEmpty ? "remote-item" : payload.name)
+            let recursiveFlag = payload.isDirectory ? "-r " : ""
+            let command = "get \(recursiveFlag)\(sftpQuote(payload.path)) \(sftpQuote(localURL.path))"
+            runSFTP(
+                command: command,
+                profile: sourceProfile,
+                title: "跨服务器传输",
+                operation: .transfer(refreshProfile: nil, refreshPath: nil, completion: { [weak self] in
+                    self?.upload(profile: targetProfile, localPath: localURL.path, remotePath: targetDirectory)
+                }),
+                activeProfileIDOverride: targetProfile.id
+            )
+        } catch {
+            status = .failed("准备跨服务器传输失败：\(error.localizedDescription)")
+            appendLog("准备跨服务器传输失败：\(error.localizedDescription)")
+        }
+    }
+
     func list(profile: SSHProfile, remotePath: String) {
         refreshDirectory(profile: profile, path: remotePath)
     }
@@ -272,7 +354,13 @@ final class SFTPManager: ObservableObject {
         runningOperation = .transfer(refreshProfile: nil, refreshPath: nil, completion: nil)
     }
 
-    private func runSFTP(command: String, profile: SSHProfile, title: String, operation: Operation) {
+    private func runSFTP(
+        command: String,
+        profile: SSHProfile,
+        title: String,
+        operation: Operation,
+        activeProfileIDOverride: UUID? = nil
+    ) {
         guard status != .running else { return }
         guard !profile.targetHost.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             status = .failed("目标主机为空")
@@ -287,7 +375,7 @@ final class SFTPManager: ObservableObject {
         appendLog("\(title)：\(command)")
         status = .running
         runningOperation = operation
-        activeProfileID = profile.id
+        activeProfileID = activeProfileIDOverride ?? profile.id
 
         let process = Process()
         let outputPipe = Pipe()

@@ -202,12 +202,14 @@ jobs:
           417ssh $VERSION portable packages.
 
           Highlights:
+          - New pure SFTP workspace supports 1-4 panes, including same-server multi-pane and multi-server layouts.
+          - Drag and drop now supports local uploads and remote item transfer between SFTP panes, including the terminal SFTP side panel.
           - SFTP file browser supports right-click actions: open, download, copy, rename, delete, refresh, new folder, and permission editing.
           - The terminal file browser is now a collapsible side panel instead of being shown all the time.
-          - Directory navigation updates the path immediately and refreshes listings in the background.
+          - Directory navigation updates the path immediately, uses cached listings when available, and refreshes in the background.
           - File tables support header sorting by name, modified time, size, and type.
           - macOS SFTP uses SSH connection multiplexing for faster repeated directory/file operations.
-          - Windows SFTP reuses the active Paramiko SSH connection for faster browsing and file actions.
+          - Windows SFTP reuses Paramiko SSH connections per profile for faster browsing and multi-server panes.
 
           Downloads:
           - macOS: \`417ssh-$VERSION-mac-app.zip\`

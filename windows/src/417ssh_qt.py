@@ -18,15 +18,17 @@ import zipfile
 from pathlib import Path
 from typing import Callable
 
-from PySide6.QtCore import QObject, Qt, QTimer, QUrl, Signal
+from PySide6.QtCore import QByteArray, QMimeData, QObject, Qt, QTimer, QUrl, Signal
 from PySide6.QtGui import QColor, QDragEnterEvent, QDropEvent, QFont, QIcon, QPixmap, QTextCursor
 from PySide6.QtWidgets import (
+    QAbstractItemView,
     QApplication,
     QCheckBox,
     QComboBox,
     QDialog,
     QFileDialog,
     QFrame,
+    QGridLayout,
     QHBoxLayout,
     QInputDialog,
     QLabel,
@@ -74,7 +76,7 @@ def app_version() -> str:
         text = version_file.read_text(encoding="utf-8").strip()
         if text:
             return text
-    return "0.3.2"
+    return "0.3.3"
 
 
 CURRENT_VERSION = app_version()
@@ -102,6 +104,7 @@ RemoteFileEntry = core.RemoteFileEntry
 connect_ssh = core.connect_ssh
 bytes_label = core.bytes_label
 SETTINGS_FILE = core.CONFIG_DIR / "settings.json"
+REMOTE_FILE_MIME = "application/x-417ssh-remote-file"
 
 
 def load_app_settings() -> dict:
@@ -393,7 +396,7 @@ def make_logo(size: int) -> QLabel:
 def status_color(status: str) -> str:
     if status in {"connected", "文件完成", "终端已连接", "已连接"}:
         return "#158a4b"
-    if status in {"connecting", "文件处理中", "正在上传", "正在下载", "终端连接中"}:
+    if status in {"connecting", "文件处理中", "文件同步中", "正在上传", "正在下载", "终端连接中"}:
         return "#b96200"
     if status in {"failed", "文件失败", "终端失败", "连接失败"}:
         return "#c23535"
@@ -428,7 +431,11 @@ class ProfileRow(QFrame):
         layout.setContentsMargins(9, 8, 8, 8)
         layout.setSpacing(8)
 
-        icon_text = "R" if profile.workspaceKind == "rstudio" else ("J" if profile.workspaceKind == "jupyter" else ">_")
+        icon_text = (
+            "R"
+            if profile.workspaceKind == "rstudio"
+            else ("J" if profile.workspaceKind == "jupyter" else ("S" if profile.workspaceKind == "sftp" else ">_"))
+        )
         icon = QLabel(icon_text)
         icon.setFixedSize(30, 30)
         icon.setAlignment(Qt.AlignCenter)
@@ -526,7 +533,7 @@ class ProfileEditor(QDialog):
         root.addWidget(scroll, 1)
 
         self.add_section("基本配置")
-        self.add_combo("workspaceKind", "工作区", [("Jupyter", "jupyter"), ("RStudio", "rstudio"), ("终端", "terminal")])
+        self.add_combo("workspaceKind", "工作区", [("Jupyter", "jupyter"), ("RStudio", "rstudio"), ("终端", "terminal"), ("SFTP", "sftp")])
         self.add_line("name", "名称")
         self.add_line("sshPassword", "SSH 密码", password=True)
         self.add_line("jupyterPath", "页面路径")
@@ -752,16 +759,37 @@ class AppSettingsDialog(QDialog):
 
 class RemoteFileTree(QTreeWidget):
     dropped_paths = Signal(list)
+    remote_dropped = Signal(dict)
     context_requested = Signal(object, object)
 
     def __init__(self) -> None:
         super().__init__()
+        self.drag_profile_id: str | None = None
         self.setAcceptDrops(True)
-        self.setDragDropMode(QTreeWidget.DropOnly)
+        self.setDragEnabled(True)
+        self.setDragDropMode(QAbstractItemView.DragDrop)
+        self.setDefaultDropAction(Qt.CopyAction)
         self.setSortingEnabled(True)
         self.sortByColumn(0, Qt.AscendingOrder)
         self.setContextMenuPolicy(Qt.CustomContextMenu)
         self.customContextMenuRequested.connect(self.show_context_menu)
+
+    def mimeData(self, items: list) -> QMimeData:
+        mime = QMimeData()
+        if not items:
+            return mime
+        item = items[0]
+        if bool(item.data(0, Qt.UserRole + 6)):
+            return mime
+        payload = {
+            "profile_id": self.drag_profile_id,
+            "name": item.text(0),
+            "path": item.data(0, Qt.UserRole),
+            "is_dir": bool(item.data(0, Qt.UserRole + 1)),
+        }
+        mime.setData(REMOTE_FILE_MIME, QByteArray(json.dumps(payload).encode("utf-8")))
+        mime.setText(item.text(0))
+        return mime
 
     def show_context_menu(self, point) -> None:
         item = self.itemAt(point)
@@ -770,18 +798,28 @@ class RemoteFileTree(QTreeWidget):
         self.context_requested.emit(item, self.viewport().mapToGlobal(point))
 
     def dragEnterEvent(self, event: QDragEnterEvent) -> None:
-        if event.mimeData().hasUrls():
+        if event.mimeData().hasUrls() or event.mimeData().hasFormat(REMOTE_FILE_MIME):
             event.acceptProposedAction()
         else:
             super().dragEnterEvent(event)
 
     def dragMoveEvent(self, event: QDragEnterEvent) -> None:
-        if event.mimeData().hasUrls():
+        if event.mimeData().hasUrls() or event.mimeData().hasFormat(REMOTE_FILE_MIME):
             event.acceptProposedAction()
         else:
             super().dragMoveEvent(event)
 
     def dropEvent(self, event: QDropEvent) -> None:
+        if event.mimeData().hasFormat(REMOTE_FILE_MIME):
+            try:
+                payload = json.loads(bytes(event.mimeData().data(REMOTE_FILE_MIME)).decode("utf-8"))
+                if isinstance(payload, dict):
+                    self.remote_dropped.emit(payload)
+                    event.acceptProposedAction()
+                    return
+            except Exception:
+                pass
+
         paths = [url.toLocalFile() for url in event.mimeData().urls() if url.isLocalFile()]
         if paths:
             self.dropped_paths.emit(paths)
@@ -819,6 +857,459 @@ class RemoteFileTreeItem(QTreeWidgetItem):
         return left < right
 
 
+class SFTPPaneState:
+    def __init__(self, profile_id: str | None = None) -> None:
+        self.token = str(time.time_ns())
+        self.profile_id = profile_id
+        self.current_path = "."
+        self.entries: list[RemoteFileEntry] = []
+        self.status = "文件空闲"
+        self.pending_path: str | None = None
+        self.filter_text = ""
+
+
+class SFTPPaneWidget(QFrame):
+    done = Signal(list, str)
+    error = Signal(str)
+    status_changed = Signal(str)
+
+    def __init__(self, controller: "MainWindow", state: SFTPPaneState, can_close: bool, on_close: Callable[[SFTPPaneState], None]) -> None:
+        super().__init__()
+        self.controller = controller
+        self.state = state
+        self.on_close = on_close
+        self.setStyleSheet("QFrame { background: white; border: 1px solid #d1d8d6; border-radius: 8px; }")
+        self.build_ui(can_close)
+        self.done.connect(self.handle_done)
+        self.error.connect(self.handle_error)
+        self.status_changed.connect(self.handle_status)
+        QTimer.singleShot(0, self.refresh_if_needed)
+
+    def build_ui(self, can_close: bool) -> None:
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(10, 10, 10, 10)
+        layout.setSpacing(8)
+
+        top = QHBoxLayout()
+        self.profile_combo = QComboBox()
+        for profile in self.controller.store.profiles:
+            self.profile_combo.addItem(profile.name, profile.id)
+        if self.state.profile_id is None and self.controller.store.profiles:
+            self.state.profile_id = self.controller.store.profiles[0].id
+        if self.state.profile_id is not None:
+            index = self.profile_combo.findData(self.state.profile_id)
+            self.profile_combo.setCurrentIndex(max(0, index))
+        self.profile_combo.currentIndexChanged.connect(lambda _index: self.change_profile())
+        top.addWidget(self.profile_combo, 1)
+
+        self.status_pill = StatusPill(self.state.status, status_color(self.state.status))
+        top.addWidget(self.status_pill)
+
+        refresh = QToolButton()
+        refresh.setText("刷新")
+        refresh.setToolTip("刷新当前目录")
+        refresh.clicked.connect(lambda: self.refresh())
+        top.addWidget(refresh)
+
+        close = QToolButton()
+        close.setText("关闭")
+        close.setToolTip("关闭面板")
+        close.setEnabled(can_close)
+        close.clicked.connect(lambda: self.on_close(self.state))
+        top.addWidget(close)
+        layout.addLayout(top)
+
+        path_row = QHBoxLayout()
+        up = QPushButton("上级")
+        up.clicked.connect(self.go_parent)
+        path_row.addWidget(up)
+        self.path_input = QLineEdit(self.state.current_path)
+        self.path_input.returnPressed.connect(lambda: self.refresh(self.path_input.text()))
+        path_row.addWidget(self.path_input, 1)
+        open_path = QPushButton("打开")
+        open_path.clicked.connect(lambda: self.refresh(self.path_input.text()))
+        path_row.addWidget(open_path)
+        layout.addLayout(path_row)
+
+        action_row = QHBoxLayout()
+        self.filter_input = QLineEdit(self.state.filter_text)
+        self.filter_input.setPlaceholderText("筛选")
+        self.filter_input.textChanged.connect(self.handle_filter_changed)
+        action_row.addWidget(self.filter_input, 1)
+
+        menu_button = QToolButton()
+        menu_button.setText("操作")
+        menu_button.setPopupMode(QToolButton.InstantPopup)
+        menu = QMenu(menu_button)
+        menu.addAction("刷新", lambda: self.refresh())
+        menu.addAction("上级文件夹", self.go_parent)
+        menu.addSeparator()
+        menu.addAction("上传文件", self.choose_upload_files)
+        menu.addAction("上传文件夹", self.choose_upload_folder)
+        menu.addAction("下载选中项", self.download_selected)
+        menu.addAction("新建文件夹", self.create_folder)
+        menu.addSeparator()
+        menu.addAction("复制到目标目录", self.copy_selected)
+        menu.addAction("重命名", self.rename_selected)
+        menu.addAction("修改权限", self.edit_selected_permissions)
+        menu.addAction("删除", self.delete_selected)
+        menu_button.setMenu(menu)
+        action_row.addWidget(menu_button)
+        layout.addLayout(action_row)
+
+        self.tree = RemoteFileTree()
+        self.tree.drag_profile_id = self.state.profile_id
+        self.tree.setHeaderLabels(["名称", "修改时间", "大小", "类型"])
+        self.tree.setColumnWidth(0, 240)
+        self.tree.itemDoubleClicked.connect(lambda _item, _column: self.open_selected())
+        self.tree.dropped_paths.connect(self.upload_paths)
+        self.tree.remote_dropped.connect(self.handle_remote_drop)
+        self.tree.context_requested.connect(self.show_context_menu)
+        layout.addWidget(self.tree, 1)
+        self.populate()
+
+    def current_profile(self) -> SSHProfile | None:
+        profile_id = self.state.profile_id
+        return next((profile for profile in self.controller.store.profiles if profile.id == profile_id), None)
+
+    def change_profile(self) -> None:
+        self.state.profile_id = self.profile_combo.currentData()
+        self.state.current_path = "."
+        self.state.entries = []
+        self.state.status = "文件空闲"
+        self.state.pending_path = None
+        self.tree.drag_profile_id = self.state.profile_id
+        self.update_widgets()
+        self.refresh()
+
+    def refresh_if_needed(self) -> None:
+        if self.current_profile() is not None and not self.state.entries:
+            self.refresh(self.state.current_path)
+
+    def refresh(self, path: str | None = None) -> None:
+        profile = self.current_profile()
+        if profile is None:
+            return
+        remote_path = (path or self.state.current_path or ".").strip() or "."
+        self.begin_navigation(profile, remote_path)
+
+        def work() -> None:
+            try:
+                entries, actual = self.controller.list_remote_directory(profile, remote_path)
+                self.done.emit(entries, actual)
+            except Exception as exc:
+                self.error.emit(str(exc))
+
+        threading.Thread(target=work, name="SFTPPaneList", daemon=True).start()
+
+    def begin_navigation(self, profile: SSHProfile, remote_path: str) -> None:
+        self.state.status = "文件同步中"
+        self.state.pending_path = remote_path
+        cached = self.controller.directory_cache.get(self.controller.directory_cache_key(profile, remote_path))
+        if cached is not None:
+            entries, actual = cached
+            self.state.entries = list(entries)
+            self.state.current_path = actual
+        else:
+            self.state.current_path = remote_path
+            parent = self.controller.parent_remote_entry(remote_path)
+            self.state.entries = [parent] if parent is not None else []
+        self.update_widgets()
+
+    def handle_done(self, entries: list, actual: str) -> None:
+        profile = self.current_profile()
+        self.state.entries = list(entries)
+        self.state.current_path = actual
+        self.state.status = "文件完成"
+        if profile is not None:
+            self.controller.directory_cache[self.controller.directory_cache_key(profile, actual)] = (list(entries), actual)
+            if self.state.pending_path:
+                self.controller.directory_cache[self.controller.directory_cache_key(profile, self.state.pending_path)] = (list(entries), actual)
+        self.state.pending_path = None
+        self.update_widgets()
+
+    def handle_error(self, message: str) -> None:
+        self.state.status = "文件失败"
+        self.state.pending_path = None
+        self.update_widgets()
+        QMessageBox.critical(self, APP_NAME, message)
+
+    def handle_status(self, status: str) -> None:
+        self.state.status = status
+        self.update_widgets()
+
+    def update_widgets(self) -> None:
+        self.status_pill.setText(self.state.status)
+        self.status_pill.set_color(status_color(self.state.status))
+        if self.path_input.text() != self.state.current_path:
+            self.path_input.setText(self.state.current_path)
+        self.tree.drag_profile_id = self.state.profile_id
+        self.populate()
+
+    def handle_filter_changed(self, text: str) -> None:
+        self.state.filter_text = text
+        self.populate()
+
+    def populate(self) -> None:
+        needle = self.state.filter_text.strip().lower()
+        self.tree.clear()
+        for entry in self.state.entries:
+            if needle and needle not in entry.name.lower():
+                continue
+            item = self.controller.make_remote_file_item(entry)
+            self.tree.addTopLevelItem(item)
+
+    def selected_entry(self) -> RemoteFileEntry | None:
+        items = self.tree.selectedItems()
+        if not items:
+            return None
+        path = items[0].data(0, Qt.UserRole)
+        return next((entry for entry in self.state.entries if entry.path == path), None)
+
+    def mutable_entry(self) -> RemoteFileEntry | None:
+        entry = self.selected_entry()
+        if entry is None:
+            QMessageBox.information(self, APP_NAME, "请先选择一个远程文件或文件夹。")
+            return None
+        if entry.name == "..":
+            QMessageBox.information(self, APP_NAME, "上级目录不能执行这个操作。")
+            return None
+        return entry
+
+    def show_context_menu(self, item: object, global_point: object) -> None:
+        entry = self.controller.remote_entry_for_item_in_entries(item, self.state.entries)
+        menu = QMenu(self)
+        if entry is None:
+            menu.addAction("刷新", lambda: self.refresh())
+            menu.addAction("新建文件夹", self.create_folder)
+            menu.addSeparator()
+            menu.addAction("上传文件", self.choose_upload_files)
+            menu.addAction("上传文件夹", self.choose_upload_folder)
+            menu.exec(global_point)
+            return
+
+        is_parent = entry.name == ".."
+        menu.addAction("打开", lambda: self.open_entry(entry))
+        download_action = menu.addAction("下载到本地", lambda: self.download_entry(entry))
+        menu.addSeparator()
+        copy_action = menu.addAction("复制到目标目录", lambda: self.copy_entry(entry))
+        rename_action = menu.addAction("重命名", lambda: self.rename_entry(entry))
+        delete_action = menu.addAction("删除", lambda: self.delete_entry(entry))
+        menu.addSeparator()
+        menu.addAction("刷新", lambda: self.refresh())
+        menu.addAction("新建文件夹", self.create_folder)
+        chmod_action = menu.addAction("修改权限", lambda: self.edit_permissions(entry))
+        for action in (download_action, copy_action, rename_action, delete_action, chmod_action):
+            action.setEnabled(not is_parent)
+        menu.exec(global_point)
+
+    def open_selected(self) -> None:
+        entry = self.selected_entry()
+        if entry is not None:
+            self.open_entry(entry)
+
+    def open_entry(self, entry: RemoteFileEntry) -> None:
+        profile = self.current_profile()
+        if profile is None:
+            return
+        if entry.is_dir:
+            self.refresh(entry.path)
+            return
+        target_dir = Path(tempfile.mkdtemp(prefix="417ssh-open-"))
+        local_path = target_dir / (entry.name or "remote-file")
+        self.run_operation("正在打开", lambda: (self.controller.download_file_to_path(profile, entry.path, local_path), self.controller.open_local_path(local_path)))
+
+    def go_parent(self) -> None:
+        path = self.state.current_path.strip()
+        if not path or path in {".", "/"}:
+            return
+        self.refresh(posixpath.dirname(path.rstrip("/")) or "/")
+
+    def choose_upload_files(self) -> None:
+        paths, _ = QFileDialog.getOpenFileNames(self, "选择要上传的文件")
+        if paths:
+            self.upload_paths(paths)
+
+    def choose_upload_folder(self) -> None:
+        path = QFileDialog.getExistingDirectory(self, "选择要上传的文件夹")
+        if path:
+            self.upload_paths([path])
+
+    def upload_paths(self, paths: list[str]) -> None:
+        profile = self.current_profile()
+        if profile is None or not paths:
+            return
+        remote_dir = self.state.current_path or "."
+
+        def worker() -> None:
+            for local in paths:
+                self.controller.upload_path(profile, Path(local), remote_dir)
+
+        self.run_operation("正在上传", worker, refresh_path=remote_dir)
+
+    def handle_remote_drop(self, payload: dict) -> None:
+        profile = self.current_profile()
+        source_profile = self.controller.profile_by_id(str(payload.get("profile_id") or ""))
+        if profile is None or source_profile is None:
+            QMessageBox.warning(self, APP_NAME, "没有找到拖拽来源或目标配置。")
+            return
+        remote_dir = self.state.current_path or "."
+        self.run_operation(
+            "正在上传",
+            lambda: self.controller.transfer_remote_payload(source_profile, payload, profile, remote_dir),
+            refresh_path=remote_dir,
+        )
+
+    def download_selected(self) -> None:
+        entry = self.mutable_entry()
+        if entry is not None:
+            self.download_entry(entry)
+
+    def download_entry(self, entry: RemoteFileEntry) -> None:
+        profile = self.current_profile()
+        if profile is None:
+            return
+        target_dir = QFileDialog.getExistingDirectory(self, "选择下载位置")
+        if not target_dir:
+            return
+        self.run_operation("正在下载", lambda: self.controller.download_path(profile, entry, Path(target_dir)))
+
+    def copy_selected(self) -> None:
+        entry = self.mutable_entry()
+        if entry is not None:
+            self.copy_entry(entry)
+
+    def copy_entry(self, entry: RemoteFileEntry) -> None:
+        profile = self.current_profile()
+        if profile is None:
+            return
+        target_dir, ok = QInputDialog.getText(self, "复制到目标目录", "输入远程目标目录：", text=self.state.current_path)
+        target_dir = target_dir.strip()
+        if not ok or not target_dir:
+            return
+        self.run_operation(
+            "文件处理中",
+            lambda: self.controller.copy_remote_path(profile, entry.path, target_dir),
+            refresh_path=self.state.current_path,
+        )
+
+    def rename_selected(self) -> None:
+        entry = self.mutable_entry()
+        if entry is not None:
+            self.rename_entry(entry)
+
+    def rename_entry(self, entry: RemoteFileEntry) -> None:
+        profile = self.current_profile()
+        if profile is None:
+            return
+        new_name, ok = QInputDialog.getText(self, "重命名", "输入新的名称：", text=entry.name)
+        new_name = new_name.strip()
+        if not ok or not new_name or new_name == entry.name:
+            return
+        if not self.controller.valid_remote_basename(new_name):
+            QMessageBox.warning(self, APP_NAME, "名称不能为空，也不能包含 /。")
+            return
+        target_path = self.controller.join_remote_path(posixpath.dirname(entry.path.rstrip("/")) or "/", new_name)
+
+        def worker() -> None:
+            def action(sftp, _connection) -> None:
+                try:
+                    sftp.stat(target_path)
+                    raise RuntimeError(f"目标已存在：{target_path}")
+                except FileNotFoundError:
+                    pass
+                except OSError:
+                    pass
+                sftp.rename(entry.path, target_path)
+
+            self.controller.run_with_sftp(profile, action)
+
+        self.run_operation("文件处理中", worker, refresh_path=self.state.current_path)
+
+    def delete_selected(self) -> None:
+        entry = self.mutable_entry()
+        if entry is not None:
+            self.delete_entry(entry)
+
+    def delete_entry(self, entry: RemoteFileEntry) -> None:
+        profile = self.current_profile()
+        if profile is None:
+            return
+        prompt = f"确定删除文件夹“{entry.name}”及其中所有内容吗？" if entry.is_dir else f"确定删除文件“{entry.name}”吗？"
+        if QMessageBox.question(self, "删除", prompt) != QMessageBox.Yes:
+            return
+        self.run_operation("文件处理中", lambda: self.controller.remove_remote_path(profile, entry.path), refresh_path=self.state.current_path)
+
+    def create_folder(self) -> None:
+        profile = self.current_profile()
+        if profile is None:
+            return
+        folder_name, ok = QInputDialog.getText(self, "新建文件夹", "输入文件夹名称：", text="新建文件夹")
+        folder_name = folder_name.strip()
+        if not ok or not folder_name:
+            return
+        if not self.controller.valid_remote_basename(folder_name):
+            QMessageBox.warning(self, APP_NAME, "名称不能为空，也不能包含 /。")
+            return
+        target_path = self.controller.join_remote_path(self.state.current_path or ".", folder_name)
+
+        def worker() -> None:
+            def action(sftp, _connection) -> None:
+                try:
+                    sftp.stat(target_path)
+                    raise RuntimeError(f"目标已存在：{target_path}")
+                except FileNotFoundError:
+                    pass
+                except OSError:
+                    pass
+                sftp.mkdir(target_path)
+
+            self.controller.run_with_sftp(profile, action)
+
+        self.run_operation("文件处理中", worker, refresh_path=self.state.current_path)
+
+    def edit_selected_permissions(self) -> None:
+        entry = self.mutable_entry()
+        if entry is not None:
+            self.edit_permissions(entry)
+
+    def edit_permissions(self, entry: RemoteFileEntry) -> None:
+        profile = self.current_profile()
+        if profile is None:
+            return
+        mode, ok = QInputDialog.getText(
+            self,
+            "修改权限",
+            "输入 chmod 权限，例如 755、664 或 u+x：",
+            text=self.controller.default_permission_mode(entry),
+        )
+        mode = mode.strip()
+        if not ok or not mode:
+            return
+        script = f"chmod {shlex.quote(mode)} -- {shlex.quote(entry.path)}"
+        self.run_operation("文件处理中", lambda: self.controller.run_remote_shell(profile, script), refresh_path=self.state.current_path)
+
+    def run_operation(self, status: str, worker: Callable, refresh_path: str | None = None) -> None:
+        profile = self.current_profile()
+        if profile is None:
+            return
+        self.status_changed.emit(status)
+
+        def work() -> None:
+            try:
+                worker()
+                if refresh_path:
+                    self.controller.invalidate_directory_cache(profile, refresh_path)
+                    entries, actual = self.controller.list_remote_directory(profile, refresh_path)
+                    self.done.emit(entries, actual)
+                else:
+                    self.status_changed.emit("文件完成")
+            except Exception as exc:
+                self.error.emit(str(exc))
+
+        threading.Thread(target=work, name="SFTPPaneOperation", daemon=True).start()
+
+
 class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
@@ -843,11 +1334,12 @@ class MainWindow(QMainWindow):
         self.update_asset: dict | None = None
         self.settings_dialog: AppSettingsDialog | None = None
         self.update_check_silent = False
-        self.sftp_connection = None
-        self.sftp_connection_profile_id: str | None = None
-        self.sftp_lock = threading.RLock()
+        self.sftp_connections: dict[str, object] = {}
+        self.sftp_locks: dict[str, threading.RLock] = {}
+        self.sftp_connection_guard = threading.RLock()
         self.file_sidebar_visible = False
         self.directory_cache: dict[tuple[str, str], tuple[list[RemoteFileEntry], str]] = {}
+        self.sftp_workspace_states: list[SFTPPaneState] = []
 
         self.setWindowTitle(APP_NAME)
         self.resize(1180, 760)
@@ -916,6 +1408,7 @@ class MainWindow(QMainWindow):
             ("Jupyter", lambda: self.add_profile("jupyter")),
             ("RStudio", lambda: self.add_profile("rstudio")),
             ("终端", lambda: self.add_profile("terminal")),
+            ("SFTP", lambda: self.add_profile("sftp")),
             ("复制", self.duplicate_profile),
             ("删除", self.delete_profile),
             ("设置", self.open_settings),
@@ -988,11 +1481,14 @@ class MainWindow(QMainWindow):
         self.profile_layout.addWidget(self.section_widget("Jupyter 工作区", self.store.profiles_for("jupyter"), "jupyter"))
         self.profile_layout.addWidget(self.section_widget("RStudio 工作区", self.store.profiles_for("rstudio"), "rstudio"))
         self.profile_layout.addWidget(self.section_widget("终端工作区", self.store.profiles_for("terminal"), "terminal"))
+        self.profile_layout.addWidget(self.section_widget("SFTP 工作区", self.store.profiles_for("sftp"), "sftp"))
         self.profile_layout.addStretch(1)
 
     def is_profile_active(self, profile: SSHProfile) -> bool:
         if profile.is_web_workspace:
             return self.tunnel_profile_id == profile.id and self.tunnel_status in {"connecting", "connected"}
+        if profile.workspaceKind == "sftp":
+            return False
         return self.terminal_profile_id == profile.id and self.terminal_status in {"connecting", "connected"}
 
     def select_profile(self, profile_id: str) -> None:
@@ -1014,6 +1510,8 @@ class MainWindow(QMainWindow):
             return
         if profile.is_web_workspace:
             self.render_web_workspace(profile)
+        elif profile.workspaceKind == "sftp":
+            self.render_sftp_workspace(profile)
         else:
             self.render_terminal(profile)
 
@@ -1177,6 +1675,94 @@ class MainWindow(QMainWindow):
         elif QWebEngineView is None:
             webbrowser.open(profile.local_url)
 
+    def render_sftp_workspace(self, profile: SSHProfile) -> None:
+        self.ensure_sftp_workspace_states(profile)
+        self.detail_layout.addWidget(self.header(profile, "SFTP 工作区", status_color("文件完成")))
+
+        container = QWidget()
+        layout = QVBoxLayout(container)
+        layout.setContentsMargins(12, 10, 12, 12)
+        layout.setSpacing(10)
+
+        controls = QHBoxLayout()
+        title = QLabel("纯 SFTP 工作区")
+        title.setStyleSheet("font-weight: 700;")
+        controls.addWidget(title)
+        controls.addWidget(StatusPill(f"{len(self.sftp_workspace_states)} 个面板", "#6f4db0"))
+        controls.addStretch(1)
+
+        count_combo = QComboBox()
+        for count in range(1, 5):
+            count_combo.addItem(str(count), count)
+        count_combo.setCurrentIndex(max(0, len(self.sftp_workspace_states) - 1))
+        count_combo.currentIndexChanged.connect(lambda _index: self.set_sftp_pane_count(int(count_combo.currentData() or 1), profile))
+        controls.addWidget(count_combo)
+
+        add = QPushButton("新增面板")
+        add.clicked.connect(lambda: self.add_sftp_pane(profile))
+        add.setEnabled(len(self.sftp_workspace_states) < 4)
+        controls.addWidget(self.set_primary(add))
+
+        config = QPushButton("配置")
+        config.clicked.connect(lambda: self.edit_profile(profile))
+        controls.addWidget(config)
+        layout.addLayout(controls)
+
+        grid_holder = QWidget()
+        grid = QGridLayout(grid_holder)
+        grid.setContentsMargins(0, 0, 0, 0)
+        grid.setSpacing(10)
+
+        positions = [(0, 0), (0, 1), (1, 0), (1, 1)]
+        for index, state in enumerate(self.sftp_workspace_states[:4]):
+            row, column = positions[index]
+            pane = SFTPPaneWidget(self, state, len(self.sftp_workspace_states) > 1, self.remove_sftp_pane)
+            if len(self.sftp_workspace_states) == 1:
+                grid.addWidget(pane, 0, 0, 2, 2)
+            elif len(self.sftp_workspace_states) == 2:
+                grid.addWidget(pane, 0, column, 2, 1)
+            else:
+                grid.addWidget(pane, row, column)
+
+        grid.setRowStretch(0, 1)
+        grid.setRowStretch(1, 1)
+        grid.setColumnStretch(0, 1)
+        grid.setColumnStretch(1, 1)
+        layout.addWidget(grid_holder, 1)
+        self.detail_layout.addWidget(container, 1)
+
+    def default_sftp_profile_id(self, profile: SSHProfile) -> str | None:
+        if profile.targetHost.strip():
+            return profile.id
+        with_target = next((item for item in self.store.profiles if item.targetHost.strip()), None)
+        return with_target.id if with_target is not None else (self.store.profiles[0].id if self.store.profiles else None)
+
+    def ensure_sftp_workspace_states(self, profile: SSHProfile) -> None:
+        if not self.sftp_workspace_states:
+            self.sftp_workspace_states = [SFTPPaneState(self.default_sftp_profile_id(profile))]
+
+    def add_sftp_pane(self, profile: SSHProfile) -> None:
+        self.ensure_sftp_workspace_states(profile)
+        if len(self.sftp_workspace_states) >= 4:
+            return
+        self.sftp_workspace_states.append(SFTPPaneState(self.default_sftp_profile_id(profile)))
+        self.render_selected_profile()
+
+    def remove_sftp_pane(self, state: SFTPPaneState) -> None:
+        if len(self.sftp_workspace_states) <= 1:
+            return
+        self.sftp_workspace_states = [item for item in self.sftp_workspace_states if item is not state]
+        self.render_selected_profile()
+
+    def set_sftp_pane_count(self, count: int, profile: SSHProfile) -> None:
+        target = max(1, min(4, count))
+        self.ensure_sftp_workspace_states(profile)
+        while len(self.sftp_workspace_states) < target:
+            self.sftp_workspace_states.append(SFTPPaneState(self.default_sftp_profile_id(profile)))
+        while len(self.sftp_workspace_states) > target:
+            self.sftp_workspace_states.pop()
+        self.render_selected_profile()
+
     def render_terminal(self, profile: SSHProfile) -> None:
         status_text = {
             "disconnected": "终端未连接",
@@ -1277,7 +1863,8 @@ class MainWindow(QMainWindow):
         title = QLabel(profile.targetHost or "远程服务器")
         title.setStyleSheet("font-weight: 700;")
         top.addWidget(title)
-        top.addWidget(StatusPill(self.sftp_status, status_color(self.sftp_status)))
+        self.sftp_status_pill = StatusPill(self.sftp_status, status_color(self.sftp_status))
+        top.addWidget(self.sftp_status_pill)
         top.addStretch(1)
         self.filter_input = QLineEdit()
         self.filter_input.setPlaceholderText("筛选")
@@ -1317,10 +1904,12 @@ class MainWindow(QMainWindow):
         layout.addLayout(path_row)
 
         self.file_tree = RemoteFileTree()
+        self.file_tree.drag_profile_id = profile.id
         self.file_tree.setHeaderLabels(["名称", "修改时间", "大小", "类型"])
         self.file_tree.setColumnWidth(0, 260)
         self.file_tree.itemDoubleClicked.connect(lambda _item, _column: self.open_selected_remote(profile))
         self.file_tree.dropped_paths.connect(lambda paths: self.upload_paths(profile, paths))
+        self.file_tree.remote_dropped.connect(lambda payload: self.handle_remote_tree_drop(profile, payload))
         self.file_tree.context_requested.connect(lambda item, point: self.show_file_context_menu(profile, item, point))
         layout.addWidget(self.file_tree, 1)
         self.populate_file_tree()
@@ -1418,40 +2007,56 @@ class MainWindow(QMainWindow):
         chmod_action = menu.addAction("修改权限", lambda: self.edit_remote_permissions(profile, entry))
 
         for action in (download_action, copy_action, rename_action, delete_action, chmod_action):
-            action.setEnabled(not is_parent and self.sftp_status not in {"文件处理中", "正在上传", "正在下载", "正在打开"})
+            action.setEnabled(not is_parent and self.sftp_status not in {"文件处理中", "文件同步中", "正在上传", "正在下载", "正在打开"})
 
         menu.exec(global_point)
 
-    def close_sftp_connection(self) -> None:
-        with self.sftp_lock:
-            if self.sftp_connection is not None:
-                self.sftp_connection.close()
-            self.sftp_connection = None
-            self.sftp_connection_profile_id = None
+    def close_sftp_connection(self, profile_id: str | None = None) -> None:
+        with self.sftp_connection_guard:
+            if profile_id is None:
+                connections = list(self.sftp_connections.values())
+                self.sftp_connections.clear()
+            else:
+                connection = self.sftp_connections.pop(profile_id, None)
+                connections = [connection] if connection is not None else []
+        for connection in connections:
+            try:
+                connection.close()
+            except Exception:
+                pass
+
+    def sftp_lock_for(self, profile_id: str) -> threading.RLock:
+        with self.sftp_connection_guard:
+            lock = self.sftp_locks.get(profile_id)
+            if lock is None:
+                lock = threading.RLock()
+                self.sftp_locks[profile_id] = lock
+            return lock
 
     def ensure_sftp_connection(self, profile: SSHProfile):
-        if self.sftp_connection is not None and self.sftp_connection_profile_id == profile.id:
-            transport = self.sftp_connection.target.get_transport()
+        connection = self.sftp_connections.get(profile.id)
+        if connection is not None:
+            transport = connection.target.get_transport()
             if transport is not None and transport.is_active():
-                return self.sftp_connection
-            self.close_sftp_connection()
+                return connection
+            self.close_sftp_connection(profile.id)
 
         connection = connect_ssh(profile)
         transport = connection.target.get_transport()
         if transport is not None and profile.keepAliveEnabled:
             transport.set_keepalive(max(10, min(profile.keepAliveInterval, 600)))
-        self.sftp_connection = connection
-        self.sftp_connection_profile_id = profile.id
+        with self.sftp_connection_guard:
+            self.sftp_connections[profile.id] = connection
         return connection
 
     def run_with_sftp(self, profile: SSHProfile, action: Callable):
-        with self.sftp_lock:
+        with self.sftp_lock_for(profile.id):
             connection = self.ensure_sftp_connection(profile)
             sftp = connection.target.open_sftp()
             try:
                 return action(sftp, connection)
             except Exception:
-                self.close_sftp_connection()
+                self.close_sftp_connection(profile.id)
                 raise
             finally:
                 try:
@@ -1503,7 +2108,7 @@ class MainWindow(QMainWindow):
         threading.Thread(target=work, name="SFTPList", daemon=True).start()
 
     def begin_remote_navigation(self, profile: SSHProfile, remote_path: str) -> None:
-        self.sftp_status = "文件处理中"
+        self.sftp_status = "文件同步中"
         cache_key = self.directory_cache_key(profile, remote_path)
         cached = self.directory_cache.get(cache_key)
         if cached is not None:
@@ -1514,7 +2119,7 @@ class MainWindow(QMainWindow):
             self.current_remote_path = remote_path
             parent = self.parent_remote_entry(remote_path)
             self.remote_entries = [parent] if parent is not None else []
-        self.render_selected_profile()
+        self.update_file_widgets()
 
     def directory_cache_key(self, profile: SSHProfile, path: str) -> tuple[str, str]:
         normalized = (path or ".").strip() or "."
@@ -1583,16 +2188,39 @@ class MainWindow(QMainWindow):
             if profile is not None:
                 self.directory_cache[self.directory_cache_key(profile, actual)] = (list(entries), actual)
         self.sftp_status = "文件完成"
-        self.render_selected_profile()
+        self.update_file_widgets()
 
     def handle_sftp_error(self, message: str) -> None:
         self.sftp_status = "文件失败"
         QMessageBox.critical(self, APP_NAME, message)
-        self.render_selected_profile()
+        self.update_file_widgets()
 
     def handle_sftp_status(self, status: str) -> None:
         self.sftp_status = status
-        self.render_selected_profile()
+        self.update_file_widgets()
+
+    def profile_by_id(self, profile_id: str) -> SSHProfile | None:
+        return next((profile for profile in self.store.profiles if profile.id == profile_id), None)
+
+    def make_remote_file_item(self, entry: RemoteFileEntry) -> RemoteFileTreeItem:
+        item = RemoteFileTreeItem([entry.name, entry.modified, entry.size, entry.kind])
+        item.setData(0, Qt.UserRole, entry.path)
+        item.setData(0, Qt.UserRole + 1, entry.is_dir)
+        item.setData(0, Qt.UserRole + 2, entry.name.lower())
+        item.setData(0, Qt.UserRole + 3, entry.modified)
+        item.setData(0, Qt.UserRole + 4, self.size_label_to_bytes(entry.size))
+        item.setData(0, Qt.UserRole + 5, entry.kind)
+        item.setData(0, Qt.UserRole + 6, entry.name == "..")
+        return item
+
+    def remote_entry_for_item_in_entries(self, item: object, entries: list[RemoteFileEntry]) -> RemoteFileEntry | None:
+        if item is None:
+            return None
+        try:
+            path = item.data(0, Qt.UserRole)
+        except Exception:
+            return None
+        return next((entry for entry in entries if entry.path == path), None)
 
     def populate_file_tree(self) -> None:
         tree = getattr(self, "file_tree", None)
@@ -1605,15 +2233,17 @@ class MainWindow(QMainWindow):
         for entry in self.remote_entries:
             if needle and needle not in entry.name.lower():
                 continue
-            item = RemoteFileTreeItem([entry.name, entry.modified, entry.size, entry.kind])
-            item.setData(0, Qt.UserRole, entry.path)
-            item.setData(0, Qt.UserRole + 1, entry.is_dir)
-            item.setData(0, Qt.UserRole + 2, entry.name.lower())
-            item.setData(0, Qt.UserRole + 3, entry.modified)
-            item.setData(0, Qt.UserRole + 4, self.size_label_to_bytes(entry.size))
-            item.setData(0, Qt.UserRole + 5, entry.kind)
-            item.setData(0, Qt.UserRole + 6, entry.name == "..")
-            tree.addTopLevelItem(item)
+            tree.addTopLevelItem(self.make_remote_file_item(entry))
+
+    def update_file_widgets(self) -> None:
+        path_input = getattr(self, "remote_path_input", None)
+        if path_input is not None and path_input.text() != self.current_remote_path:
+            path_input.setText(self.current_remote_path)
+        pill = getattr(self, "sftp_status_pill", None)
+        if pill is not None:
+            pill.setText(self.sftp_status)
+            pill.set_color(status_color(self.sftp_status))
+        self.populate_file_tree()
 
     def size_label_to_bytes(self, value: str) -> int:
         text = (value or "").strip()
@@ -1647,13 +2277,7 @@ class MainWindow(QMainWindow):
         return next((entry for entry in self.remote_entries if entry.path == path), None)
 
     def remote_entry_for_item(self, item: object) -> RemoteFileEntry | None:
-        if item is None:
-            return None
-        try:
-            path = item.data(0, Qt.UserRole)
-        except Exception:
-            return None
-        return next((entry for entry in self.remote_entries if entry.path == path), None)
+        return self.remote_entry_for_item_in_entries(item, self.remote_entries)
 
     def open_selected_remote(self, profile: SSHProfile) -> None:
         entry = self.selected_remote_entry()
@@ -1716,14 +2340,9 @@ class MainWindow(QMainWindow):
         if entry is not None:
             self.edit_remote_permissions(profile, entry)
 
-    def copy_remote_entry(self, profile: SSHProfile, entry: RemoteFileEntry) -> None:
-        target_dir, ok = QInputDialog.getText(self, "复制到目标目录", "输入远程目标目录：", text=self.current_remote_path)
-        target_dir = target_dir.strip()
-        if not ok or not target_dir:
-            return
-
+    def copy_remote_path(self, profile: SSHProfile, source_path: str, target_dir: str) -> None:
         script = f"""
-src={shlex.quote(entry.path)}
+src={shlex.quote(source_path)}
 target_dir={shlex.quote(target_dir)}
 if [ ! -e "$src" ] && [ ! -L "$src" ]; then
   printf '源文件不存在：%s' "$src" >&2
@@ -1740,10 +2359,40 @@ if [ -e "$target_dir/$base" ] || [ -L "$target_dir/$base" ]; then
 fi
 cp -a -- "$src" "$target_dir/"
 """
+        self.run_remote_shell(profile, script)
+
+    def transfer_remote_payload(self, source_profile: SSHProfile, payload: dict, target_profile: SSHProfile, target_dir: str) -> None:
+        source_path = str(payload.get("path") or "")
+        name = str(payload.get("name") or posixpath.basename(source_path) or "remote-item")
+        is_dir = bool(payload.get("is_dir"))
+        if not source_path:
+            raise RuntimeError("拖拽来源路径为空。")
+        if source_profile.id == target_profile.id:
+            self.copy_remote_path(target_profile, source_path, target_dir)
+            return
+
+        temp_dir = Path(tempfile.mkdtemp(prefix="417ssh-transfer-"))
+        entry = RemoteFileEntry(
+            name=name,
+            path=source_path,
+            is_dir=is_dir,
+            is_link=False,
+            permissions="",
+            size="",
+            modified="",
+        )
+        self.download_path(source_profile, entry, temp_dir)
+        self.upload_path(target_profile, temp_dir / name, target_dir)
+
+    def copy_remote_entry(self, profile: SSHProfile, entry: RemoteFileEntry) -> None:
+        target_dir, ok = QInputDialog.getText(self, "复制到目标目录", "输入远程目标目录：", text=self.current_remote_path)
+        target_dir = target_dir.strip()
+        if not ok or not target_dir:
+            return
         self.run_file_operation(
             profile,
             "文件处理中",
-            lambda: self.run_remote_shell(profile, script),
+            lambda: self.copy_remote_path(profile, entry.path, target_dir),
             self.current_remote_path,
         )
 
@@ -1900,6 +2549,25 @@ cp -a -- "$src" "$target_dir/"
                 self.bridge.sftp_error.emit(str(exc))
 
         threading.Thread(target=work, name="SFTPUpload", daemon=True).start()
+
+    def handle_remote_tree_drop(self, profile: SSHProfile, payload: dict) -> None:
+        source_profile = self.profile_by_id(str(payload.get("profile_id") or ""))
+        if source_profile is None:
+            QMessageBox.warning(self, APP_NAME, "没有找到拖拽来源配置。")
+            return
+        remote_dir = self.current_remote_path or "."
+        self.bridge.sftp_status.emit("正在上传")
+
+        def work() -> None:
+            try:
+                self.transfer_remote_payload(source_profile, payload, profile, remote_dir)
+                self.invalidate_directory_cache(profile, remote_dir)
+                entries, actual = self.list_remote_directory(profile, remote_dir)
+                self.bridge.sftp_done.emit(entries, actual)
+            except Exception as exc:
+                self.bridge.sftp_error.emit(str(exc))
+
+        threading.Thread(target=work, name="SFTPRemoteDrop", daemon=True).start()
 
     def upload_path(self, profile: SSHProfile, local_path: Path, remote_dir: str) -> None:
         def action(sftp, _connection) -> None:

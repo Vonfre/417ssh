@@ -1,6 +1,16 @@
 import AppKit
 import SwiftUI
 
+struct RemoteFileDragPayload: Codable {
+    static let typeIdentifier = "com.vonfre.417ssh.remote-file"
+    static let pasteboardType = NSPasteboard.PasteboardType(typeIdentifier)
+
+    let profileID: String
+    let name: String
+    let path: String
+    let isDirectory: Bool
+}
+
 enum RemoteFileContextAction {
     case open
     case download
@@ -22,6 +32,7 @@ enum RemoteFileSortColumn: String {
 
 struct RemoteFileTableView: NSViewRepresentable {
     let entries: [RemoteFileEntry]
+    let profileID: UUID
     @Binding var selectedEntry: RemoteFileEntry?
     @Binding var sortColumn: RemoteFileSortColumn
     @Binding var sortAscending: Bool
@@ -54,6 +65,7 @@ struct RemoteFileTableView: NSViewRepresentable {
         tableView.delegate = context.coordinator
         tableView.target = context.coordinator
         tableView.doubleAction = #selector(Coordinator.doubleClick(_:))
+        tableView.setDraggingSourceOperationMask(.copy, forLocal: false)
         tableView.contextMenuProvider = { [weak coordinator = context.coordinator, weak tableView] event in
             guard let tableView else { return nil }
             return coordinator?.contextMenu(for: event, in: tableView)
@@ -229,6 +241,25 @@ struct RemoteFileTableView: NSViewRepresentable {
             }
             parent.sortColumn = column
             parent.sortAscending = descriptor.ascending
+        }
+
+        func tableView(_ tableView: NSTableView, pasteboardWriterForRow row: Int) -> NSPasteboardWriting? {
+            guard row >= 0, row < entries.count else { return nil }
+            let entry = entries[row]
+            guard entry.name != ".." else { return nil }
+
+            let payload = RemoteFileDragPayload(
+                profileID: parent.profileID.uuidString,
+                name: entry.name,
+                path: entry.path,
+                isDirectory: entry.isDirectory
+            )
+            guard let data = try? JSONEncoder().encode(payload) else { return nil }
+
+            let item = NSPasteboardItem()
+            item.setData(data, forType: RemoteFileDragPayload.pasteboardType)
+            item.setString(entry.name, forType: .string)
+            return item
         }
 
         @objc func doubleClick(_ sender: NSTableView) {

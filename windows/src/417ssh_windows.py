@@ -53,6 +53,8 @@ def workspace_title(kind: str) -> str:
         return "RStudio"
     if kind == "terminal":
         return "终端"
+    if kind == "sftp":
+        return "SFTP"
     return "Jupyter"
 
 
@@ -60,6 +62,8 @@ def default_profile_name(kind: str, number: int) -> str:
     title = workspace_title(kind)
     if kind == "terminal":
         return "新终端" if number <= 1 else f"新终端 {number}"
+    if kind == "sftp":
+        return "新 SFTP" if number <= 1 else f"新 SFTP {number}"
     return f"新 {title}" if number <= 1 else f"新 {title} {number}"
 
 
@@ -753,7 +757,7 @@ class ProfileEditor(tk.Toplevel):
         scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
 
         self.section("基本配置")
-        self.choice("workspaceKind", "工作区", [("Jupyter", "jupyter"), ("RStudio", "rstudio"), ("终端", "terminal")])
+        self.choice("workspaceKind", "工作区", [("Jupyter", "jupyter"), ("RStudio", "rstudio"), ("终端", "terminal"), ("SFTP", "sftp")])
         self.text("name", "名称")
         self.password("sshPassword", "SSH 密码")
         self.text("jupyterPath", "页面路径")
@@ -947,7 +951,7 @@ class App(tk.Tk):
     def refresh_sidebar(self) -> None:
         selected = self.store.selected_profile_id
         self.profile_tree.delete(*self.profile_tree.get_children())
-        for kind, title in (("jupyter", "Jupyter 工作区"), ("rstudio", "RStudio 工作区"), ("terminal", "终端工作区")):
+        for kind, title in (("jupyter", "Jupyter 工作区"), ("rstudio", "RStudio 工作区"), ("terminal", "终端工作区"), ("sftp", "SFTP 工作区")):
             parent = f"group:{kind}"
             self.profile_tree.insert("", tk.END, iid=parent, text=title, open=True)
             for profile in self.store.profiles_for(kind):

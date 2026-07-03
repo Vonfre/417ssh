@@ -4,6 +4,7 @@ enum WorkspaceKind: String, Codable, CaseIterable, Identifiable {
     case jupyter
     case rstudio
     case terminal
+    case sftp
 
     var id: String { rawValue }
 
@@ -15,6 +16,8 @@ enum WorkspaceKind: String, Codable, CaseIterable, Identifiable {
             return "RStudio"
         case .terminal:
             return "终端"
+        case .sftp:
+            return "SFTP"
         }
     }
 
@@ -26,6 +29,8 @@ enum WorkspaceKind: String, Codable, CaseIterable, Identifiable {
             return "RStudio 工作区"
         case .terminal:
             return "终端工作区"
+        case .sftp:
+            return "SFTP 工作区"
         }
     }
 
@@ -37,6 +42,8 @@ enum WorkspaceKind: String, Codable, CaseIterable, Identifiable {
             return "display"
         case .terminal:
             return "terminal"
+        case .sftp:
+            return "folder.badge.gearshape"
         }
     }
 
@@ -44,7 +51,7 @@ enum WorkspaceKind: String, Codable, CaseIterable, Identifiable {
         switch self {
         case .jupyter, .rstudio:
             return true
-        case .terminal:
+        case .terminal, .sftp:
             return false
         }
     }
@@ -57,6 +64,8 @@ enum WorkspaceKind: String, Codable, CaseIterable, Identifiable {
             return "还没有 RStudio 配置"
         case .terminal:
             return "还没有终端配置"
+        case .sftp:
+            return "还没有 SFTP 配置"
         }
     }
 }
@@ -226,7 +235,7 @@ struct SSHProfile: Identifiable, Codable, Equatable {
             return sshArguments(includeBatchMode: false).map { argument in
                 argument.shellQuoted
             }.joined(separator: " ")
-        case .terminal:
+        case .terminal, .sftp:
             return terminalArguments(includeBatchMode: false).map { argument in
                 argument.shellQuoted
             }.joined(separator: " ")
@@ -427,6 +436,8 @@ private extension WorkspaceKind {
             return number <= 1 ? "新 RStudio" : "新 RStudio \(number)"
         case .terminal:
             return number <= 1 ? "新终端" : "新终端 \(number)"
+        case .sftp:
+            return number <= 1 ? "新 SFTP" : "新 SFTP \(number)"
         }
     }
 
@@ -437,6 +448,8 @@ private extension WorkspaceKind {
         case .rstudio:
             return 8008 + max(0, number - 1)
         case .terminal:
+            return 8000 + max(0, number - 1)
+        case .sftp:
             return 8000 + max(0, number - 1)
         }
     }
@@ -449,6 +462,8 @@ private extension WorkspaceKind {
             return "localhost"
         case .terminal:
             return "127.0.0.1"
+        case .sftp:
+            return "127.0.0.1"
         }
     }
 
@@ -460,6 +475,8 @@ private extension WorkspaceKind {
             return 8787
         case .terminal:
             return 8888
+        case .sftp:
+            return 8888
         }
     }
 
@@ -470,6 +487,8 @@ private extension WorkspaceKind {
         case .rstudio:
             return "/"
         case .terminal:
+            return "/lab/tree/work"
+        case .sftp:
             return "/lab/tree/work"
         }
     }

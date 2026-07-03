@@ -35,6 +35,13 @@ struct ContentView: View {
                             editingProfileID = profile.id
                         }
                     )
+                case .sftp:
+                    SFTPWorkspaceView(
+                        profileBox: store.binding(for: profile),
+                        onEdit: {
+                            editingProfileID = profile.id
+                        }
+                    )
                 }
             } else {
                 EmptyStateView(
@@ -144,6 +151,18 @@ struct ContentView: View {
                     ) {
                         profileRows(for: .terminal)
                     }
+
+                    ProfileSectionView(
+                        title: WorkspaceKind.sftp.sidebarTitle,
+                        count: store.profiles(for: .sftp).count,
+                        addHelp: "新增 SFTP 工作区",
+                        onAdd: {
+                            store.addProfile(kind: .sftp)
+                            editingProfileID = store.selectedProfileID
+                        }
+                    ) {
+                        profileRows(for: .sftp)
+                    }
                 }
                 .padding(.horizontal, 10)
                 .padding(.vertical, 6)
@@ -176,6 +195,14 @@ struct ContentView: View {
                     Label("终端", systemImage: "plus.viewfinder")
                 }
                 .help("新增终端工作区")
+
+                Button {
+                    store.addProfile(kind: .sftp)
+                    editingProfileID = store.selectedProfileID
+                } label: {
+                    Label("SFTP", systemImage: "plus.rectangle.portrait")
+                }
+                .help("新增 SFTP 工作区")
 
                 Button {
                     store.duplicateSelectedProfile()
@@ -256,6 +283,8 @@ struct ContentView: View {
             return tunnel.activeProfileID == profile.id && tunnel.status.isRunning
         case .terminal:
             return terminal.activeProfileID == profile.id && terminal.status.isRunning
+        case .sftp:
+            return false
         }
     }
 }
@@ -291,6 +320,8 @@ enum AppTheme {
             return teal
         case .terminal:
             return amber
+        case .sftp:
+            return Color(red: 0.50, green: 0.36, blue: 0.74)
         }
     }
 }
@@ -461,7 +492,7 @@ private struct ProfileRow: View {
         switch profile.workspaceKind {
         case .jupyter, .rstudio:
             return "\(profile.localPort) -> \(profile.remoteHost):\(profile.remotePort)"
-        case .terminal:
+        case .terminal, .sftp:
             return profile.targetAddress.isEmpty ? "未填写目标主机" : profile.targetAddress
         }
     }
@@ -950,6 +981,7 @@ private enum WebWorkspaceTab: String, CaseIterable, Identifiable {
 }
 
 private struct TerminalWorkspaceView: View {
+    @EnvironmentObject private var store: ProfileStore
     @EnvironmentObject private var terminal: TerminalManager
     @EnvironmentObject private var sftp: SFTPManager
 
@@ -979,6 +1011,7 @@ private struct TerminalWorkspaceView: View {
                 if isFileSidebarVisible {
                     RemoteFileBrowserPane(
                         profile: currentProfile,
+                        availableProfiles: store.profiles,
                         selectedEntry: $selectedEntry,
                         remotePathText: $remotePathText
                     )
@@ -1204,10 +1237,365 @@ private struct TerminalWorkspaceView: View {
     }
 }
 
+private struct SFTPWorkspacePaneState: Identifiable, Equatable {
+    let id = UUID()
+    var profileID: UUID?
+    var selectedEntry: RemoteFileEntry?
+    var remotePathText = "."
+}
+
+private struct SFTPWorkspaceView: View {
+    @Environment(\.colorScheme) private var colorScheme
+    @EnvironmentObject private var store: ProfileStore
+
+    let profileBox: BindingBox<SSHProfile>
+    let onEdit: () -> Void
+
+    @State private var panes: [SFTPWorkspacePaneState] = []
+
+    private var currentProfile: SSHProfile {
+        profileBox.get()
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            header
+
+            VStack(spacing: 10) {
+                toolbar
+
+                paneGrid
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
+            .padding(12)
+        }
+        .background(Color(nsColor: .windowBackgroundColor))
+        .onAppear(perform: ensureInitialPane)
+        .onChange(of: currentProfile.id) { _ in
+            ensureInitialPane()
+        }
+    }
+
+    private var header: some View {
+        ViewThatFits(in: .horizontal) {
+            HStack(spacing: 10) {
+                headerTitle
+                    .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
+                headerButtons
+                    .layoutPriority(2)
+            }
+
+            VStack(alignment: .leading, spacing: 8) {
+                headerTitle
+                headerButtons
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+        .background(.regularMaterial)
+        .overlay(alignment: .bottom) {
+            Divider()
+                .opacity(0.58)
+        }
+    }
+
+    private var headerTitle: some View {
+        HStack(spacing: 10) {
+            WorkspaceIconTile(kind: .sftp, isActive: false, size: 34)
+
+            VStack(alignment: .leading, spacing: 3) {
+                HStack(spacing: 8) {
+                    Text(currentProfile.name)
+                        .font(.title3.weight(.semibold))
+                        .lineLimit(1)
+
+                    StatusDot(text: "\(max(1, panes.count)) 个面板", color: AppTheme.workspaceColor(.sftp))
+                }
+
+                Text(currentProfile.targetAddress.isEmpty ? "可在每个面板选择服务器" : currentProfile.targetAddress)
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .textSelection(.enabled)
+            }
+            .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    private var headerButtons: some View {
+        ViewThatFits(in: .horizontal) {
+            HStack(spacing: 8) {
+                sftpActionButtons
+            }
+
+            HStack(spacing: 6) {
+                sftpActionButtons
+            }
+            .labelStyle(.iconOnly)
+        }
+        .controlSize(.small)
+        .fixedSize(horizontal: true, vertical: false)
+    }
+
+    @ViewBuilder
+    private var sftpActionButtons: some View {
+        Button(action: onEdit) {
+            Label("配置", systemImage: "slider.horizontal.3")
+        }
+        .buttonStyle(.bordered)
+
+        Button(action: addPane) {
+            Label("新增面板", systemImage: "rectangle.grid.2x2")
+        }
+        .buttonStyle(.borderedProminent)
+        .disabled(panes.count >= 4 || store.profiles.isEmpty)
+    }
+
+    private var toolbar: some View {
+        HStack(spacing: 8) {
+            Label("SFTP 工作区", systemImage: "folder.badge.gearshape")
+                .font(.headline)
+
+            Text("最多 4 个面板")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+            Spacer(minLength: 0)
+
+            Picker("布局", selection: paneCountBinding) {
+                ForEach(1...4, id: \.self) { count in
+                    Text("\(count)")
+                        .tag(count)
+                }
+            }
+            .pickerStyle(.segmented)
+            .frame(width: 150)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 9)
+        .background(AppTheme.panelBackground(colorScheme), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .stroke(Color(nsColor: .separatorColor).opacity(0.38), lineWidth: 1)
+        }
+    }
+
+    @ViewBuilder
+    private var paneGrid: some View {
+        switch panes.count {
+        case 0:
+            EmptyStateView(
+                systemImage: "folder.badge.gearshape",
+                title: "还没有 SFTP 面板",
+                subtitle: "点击新增面板后选择服务器"
+            )
+        case 1:
+            paneView(0)
+        case 2:
+            HSplitView {
+                paneView(0)
+                paneView(1)
+            }
+        default:
+            VSplitView {
+                HSplitView {
+                    paneView(0)
+                    paneView(1)
+                }
+
+                HSplitView {
+                    paneView(2)
+                    if panes.count > 3 {
+                        paneView(3)
+                    } else {
+                        Color.clear
+                            .frame(minWidth: 280, minHeight: 220)
+                    }
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func paneView(_ index: Int) -> some View {
+        if panes.indices.contains(index) {
+            SFTPWorkspacePaneContainer(
+                pane: paneBinding(index),
+                availableProfiles: store.profiles,
+                canClose: panes.count > 1,
+                onClose: { paneID in
+                    removePane(paneID)
+                }
+            )
+            .frame(minWidth: 320, minHeight: 220)
+        }
+    }
+
+    private var paneCountBinding: Binding<Int> {
+        Binding(
+            get: { max(1, panes.count) },
+            set: { newCount in
+                setPaneCount(newCount)
+            }
+        )
+    }
+
+    private func paneBinding(_ index: Int) -> Binding<SFTPWorkspacePaneState> {
+        Binding(
+            get: { panes[index] },
+            set: { panes[index] = $0 }
+        )
+    }
+
+    private func ensureInitialPane() {
+        guard panes.isEmpty else { return }
+        panes = [SFTPWorkspacePaneState(profileID: defaultPaneProfileID)]
+    }
+
+    private var defaultPaneProfileID: UUID? {
+        if !currentProfile.targetHost.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return currentProfile.id
+        }
+
+        return store.profiles.first(where: { !$0.targetHost.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty })?.id
+            ?? store.profiles.first?.id
+    }
+
+    private func addPane() {
+        guard panes.count < 4 else { return }
+        panes.append(SFTPWorkspacePaneState(profileID: defaultPaneProfileID))
+    }
+
+    private func removePane(_ paneID: UUID) {
+        guard panes.count > 1 else { return }
+        panes.removeAll { $0.id == paneID }
+    }
+
+    private func setPaneCount(_ count: Int) {
+        let target = min(max(count, 1), 4)
+        if panes.isEmpty {
+            ensureInitialPane()
+        }
+
+        while panes.count < target {
+            addPane()
+        }
+
+        while panes.count > target {
+            panes.removeLast()
+        }
+    }
+}
+
+private struct SFTPWorkspacePaneContainer: View {
+    @StateObject private var sftp = SFTPManager()
+
+    @Binding var pane: SFTPWorkspacePaneState
+    let availableProfiles: [SSHProfile]
+    let canClose: Bool
+    let onClose: (UUID) -> Void
+
+    private var selectedProfile: SSHProfile? {
+        guard let profileID = pane.profileID else { return availableProfiles.first }
+        return availableProfiles.first { $0.id == profileID }
+    }
+
+    var body: some View {
+        VStack(spacing: 8) {
+            HStack(spacing: 8) {
+                Picker("服务器", selection: profileSelection) {
+                    ForEach(availableProfiles) { profile in
+                        Text(profile.name)
+                            .tag(Optional(profile.id))
+                    }
+                }
+                .labelsHidden()
+                .frame(maxWidth: 220)
+
+                if let selectedProfile {
+                    Text(selectedProfile.targetAddress.isEmpty ? "未填写目标主机" : selectedProfile.targetAddress)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
+
+                Spacer(minLength: 0)
+
+                Button(action: refresh) {
+                    Image(systemName: "arrow.clockwise")
+                }
+                .buttonStyle(.bordered)
+                .help("刷新当前面板")
+                .disabled(selectedProfile == nil || sftp.status == .running)
+
+                Button {
+                    onClose(pane.id)
+                } label: {
+                    Image(systemName: "xmark")
+                }
+                .buttonStyle(.bordered)
+                .help("关闭面板")
+                .disabled(!canClose)
+            }
+            .controlSize(.small)
+
+            if let selectedProfile {
+                RemoteFileBrowserPane(
+                    profile: selectedProfile,
+                    availableProfiles: availableProfiles,
+                    selectedEntry: $pane.selectedEntry,
+                    remotePathText: $pane.remotePathText
+                )
+                .environmentObject(sftp)
+            } else {
+                EmptyStateView(
+                    systemImage: "server.rack",
+                    title: "没有可用配置",
+                    subtitle: "先新增一个连接配置"
+                )
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .background(Color(nsColor: .textBackgroundColor), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+            }
+        }
+        .onAppear(perform: refreshIfNeeded)
+        .onChange(of: pane.profileID) { _ in
+            pane.selectedEntry = nil
+            pane.remotePathText = "."
+            sftp.cancel()
+            sftp.clear()
+            refresh()
+        }
+    }
+
+    private var profileSelection: Binding<UUID?> {
+        Binding(
+            get: { pane.profileID ?? availableProfiles.first?.id },
+            set: { pane.profileID = $0 }
+        )
+    }
+
+    private func refreshIfNeeded() {
+        if pane.profileID == nil {
+            pane.profileID = availableProfiles.first?.id
+        }
+
+        guard sftp.activeProfileID == nil else { return }
+        refresh()
+    }
+
+    private func refresh() {
+        guard let selectedProfile else { return }
+        sftp.refreshDirectory(profile: selectedProfile, path: pane.remotePathText)
+    }
+}
+
 private struct RemoteFileBrowserPane: View {
     @EnvironmentObject private var sftp: SFTPManager
 
     let profile: SSHProfile
+    let availableProfiles: [SSHProfile]
     @Binding var selectedEntry: RemoteFileEntry?
     @Binding var remotePathText: String
     @State private var filterText = ""
@@ -1357,6 +1745,7 @@ private struct RemoteFileBrowserPane: View {
             ZStack(alignment: .top) {
                 RemoteFileTableView(
                     entries: displayedEntries,
+                    profileID: profile.id,
                     selectedEntry: $selectedEntry,
                     sortColumn: $sortColumn,
                     sortAscending: $sortAscending,
@@ -1372,7 +1761,7 @@ private struct RemoteFileBrowserPane: View {
                 if displayedEntries.isEmpty {
                     EmptyStateView(
                         systemImage: isLoadingDirectory ? "folder.badge.gearshape" : "folder",
-                        title: isLoadingDirectory ? "正在读取目录" : "还没有文件列表",
+                        title: isLoadingDirectory ? "已切换路径，正在同步" : "还没有文件列表",
                         subtitle: isLoadingDirectory ? loadingDirectoryText : (filterText.isEmpty ? "展开文件侧栏后可以刷新，也可以拖拽上传" : "没有匹配的文件")
                     )
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -1392,7 +1781,7 @@ private struct RemoteFileBrowserPane: View {
                 RoundedRectangle(cornerRadius: 8, style: .continuous)
                     .fill(Color.accentColor.opacity(0.12))
                     .overlay {
-                        Label("松开以上传到当前目录", systemImage: "arrow.up.doc.fill")
+                        Label("松开以传输到当前目录", systemImage: "arrow.up.doc.fill")
                             .font(.headline)
                             .padding(18)
                             .background(Color(nsColor: .textBackgroundColor), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
@@ -1403,8 +1792,8 @@ private struct RemoteFileBrowserPane: View {
             RoundedRectangle(cornerRadius: 8, style: .continuous)
                 .stroke(Color(nsColor: .separatorColor).opacity(0.48), lineWidth: 1)
         }
-        .onDrop(of: [UTType.fileURL.identifier], isTargeted: $isDropTarget) { providers in
-            handleFileDrop(providers)
+        .onDrop(of: [UTType.fileURL.identifier, RemoteFileDragPayload.typeIdentifier], isTargeted: $isDropTarget) { providers in
+            handleDrop(providers)
         }
         .onAppear {
             if remotePathText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
@@ -1440,7 +1829,7 @@ private struct RemoteFileBrowserPane: View {
     }
 
     private var loadingDirectoryText: String {
-        sftp.loadingRemotePath.map { "正在读取 \($0)" } ?? "正在读取远程目录"
+        sftp.loadingRemotePath.map { "后台同步 \($0)" } ?? "后台同步远程目录"
     }
 
     private var filteredEntries: [RemoteFileEntry] {
@@ -1602,31 +1991,84 @@ private struct RemoteFileBrowserPane: View {
         let panel = NSOpenPanel()
         panel.canChooseFiles = true
         panel.canChooseDirectories = true
-        panel.allowsMultipleSelection = false
-        if panel.runModal() == .OK, let url = panel.url {
-            sftp.upload(profile: profile, localPath: url.path, remotePath: remotePathText)
+        panel.allowsMultipleSelection = true
+        if panel.runModal() == .OK {
+            let paths = panel.urls.map(\.path)
+            sftp.upload(profile: profile, localPaths: paths, remotePath: remotePathText)
         }
     }
 
-    private func handleFileDrop(_ providers: [NSItemProvider]) -> Bool {
-        guard let provider = providers.first(where: { $0.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier) }) else {
+    private func handleDrop(_ providers: [NSItemProvider]) -> Bool {
+        if handleRemoteDrop(providers) {
+            return true
+        }
+
+        return handleFileDrop(providers)
+    }
+
+    private func handleRemoteDrop(_ providers: [NSItemProvider]) -> Bool {
+        guard let provider = providers.first(where: { $0.hasItemConformingToTypeIdentifier(RemoteFileDragPayload.typeIdentifier) }) else {
             return false
         }
 
-        provider.loadItem(forTypeIdentifier: UTType.fileURL.identifier, options: nil) { item, _ in
-            let url: URL?
-            if let data = item as? Data {
-                url = URL(dataRepresentation: data, relativeTo: nil)
-            } else if let itemURL = item as? URL {
-                url = itemURL
-            } else {
-                url = nil
+        provider.loadDataRepresentation(forTypeIdentifier: RemoteFileDragPayload.typeIdentifier) { data, _ in
+            guard
+                let data,
+                let payload = try? JSONDecoder().decode(RemoteFileDragPayload.self, from: data),
+                let sourceProfileID = UUID(uuidString: payload.profileID)
+            else {
+                return
             }
 
-            guard let url else { return }
             DispatchQueue.main.async {
-                sftp.upload(profile: profile, localPath: url.path, remotePath: remotePathText)
+                guard let sourceProfile = availableProfiles.first(where: { $0.id == sourceProfileID }) else {
+                    showAlert(title: "无法传输", message: "没有找到拖拽来源的连接配置。")
+                    return
+                }
+
+                sftp.transferRemoteEntry(
+                    sourceProfile: sourceProfile,
+                    payload: payload,
+                    targetProfile: profile,
+                    targetDirectory: remotePathText
+                )
             }
+        }
+
+        return true
+    }
+
+    private func handleFileDrop(_ providers: [NSItemProvider]) -> Bool {
+        let fileProviders = providers.filter { $0.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier) }
+        guard !fileProviders.isEmpty else {
+            return false
+        }
+
+        let collectedPaths = LockedPathCollector()
+        let group = DispatchGroup()
+
+        for provider in fileProviders {
+            group.enter()
+            provider.loadItem(forTypeIdentifier: UTType.fileURL.identifier, options: nil) { item, _ in
+                defer { group.leave() }
+                let url: URL?
+                if let data = item as? Data {
+                    url = URL(dataRepresentation: data, relativeTo: nil)
+                } else if let itemURL = item as? URL {
+                    url = itemURL
+                } else {
+                    url = nil
+                }
+
+                guard let url else { return }
+                collectedPaths.append(url.path)
+            }
+        }
+
+        group.notify(queue: .main) {
+            let paths = collectedPaths.values()
+            guard !paths.isEmpty else { return }
+            sftp.upload(profile: profile, localPaths: paths, remotePath: remotePathText)
         }
 
         return true
@@ -1830,7 +2272,7 @@ private struct RemoteFileBrowserPane: View {
         if sftp.activeProfileID == profile.id {
             switch sftp.status {
             case .running:
-                return "正在处理..."
+                return "后台同步中..."
             case .failed(let message):
                 return message
             case .completed, .idle:
@@ -1839,6 +2281,24 @@ private struct RemoteFileBrowserPane: View {
         }
 
         return "\(visibleEntries.count) 个项目"
+    }
+}
+
+private final class LockedPathCollector: @unchecked Sendable {
+    private let lock = NSLock()
+    private var paths: [String] = []
+
+    func append(_ path: String) {
+        lock.lock()
+        paths.append(path)
+        lock.unlock()
+    }
+
+    func values() -> [String] {
+        lock.lock()
+        let result = paths
+        lock.unlock()
+        return result
     }
 }
 
