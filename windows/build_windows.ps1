@@ -44,8 +44,9 @@ $pyInstallerArgs = @(
     "--hidden-import", "tkinter.messagebox",
     "--hidden-import", "tkinter.ttk",
     "--hidden-import", "uuid",
+    "--hidden-import", "PySide6.QtWebChannel",
     "--hidden-import", "PySide6.QtWebEngineWidgets",
-    "--add-data", "assets\logo.jpg;assets",
+    "--add-data", "assets;assets",
     "--add-data", "VERSION;.",
     "--add-data", "src\417ssh_windows.py;.",
     "src\417ssh_qt.py"

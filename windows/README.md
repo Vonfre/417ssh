@@ -7,7 +7,7 @@
 - 新增配置可以直接取消，取消后不会留下空白连接。
 - 支持目标机、跳板机、密码、密钥、SSH keepalive。
 - 建立 Jupyter 或 RStudio Server 本地端口转发，并在应用内嵌浏览器打开 `http://127.0.0.1:<端口>/<路径>`。
-- 提供内置交互式 SSH 终端，键盘输入会直接进入远端 PTY；也可以打开 Windows 原生 `cmd.exe` 里的 `ssh`。
+- 提供内置真实 SSH 终端：界面使用随应用打包的 xterm.js 终端模拟器，后端连接 Paramiko SSH PTY；也可以打开 Windows 原生 `cmd.exe` 里的 `ssh`。
 - 终端工作区可以点击 `文件` 展开 SFTP 侧栏；侧栏支持将 `cd <SFTP 路径>` 放到终端、同步到终端当前文件夹、自动跟随终端 `cd` 切换；目录跳转会先即时切换路径并在后台刷新列表，文件列表支持点击表头排序。
 - 纯 SFTP 工作区只保留一个入口；进入后顶部标签可多开多个传输组合，每个标签内部固定为左右 A/B 两栏，左侧默认 `127.0.0.1`，两栏都可从 Hosts 页面选择本地、终端工作区或自定义 SFTP 来源。
 - 浏览本地和远程目录、返回上级、筛选、本地拖到远程上传、远程拖到本地下载、A/B 两栏间远程传输、按钮上传文件/文件夹、下载文件/文件夹；自定义 SFTP Host 在 Hosts 区用按钮新增、编辑和删除。
@@ -71,7 +71,7 @@ dist\417ssh-<版本>-win-portable.zip
 
 ## 说明
 
-- Windows 版使用 Paramiko 连接 SSH，所以内置网页隧道、内置终端和 SFTP 都支持密码登录。
+- Windows 版使用 Paramiko 连接 SSH，所以内置网页隧道、内置 xterm.js 终端和 SFTP 都支持密码登录。
 - Jupyter/RStudio 页面优先使用 Qt WebEngine 内嵌在窗口里；如果当前 Python 环境没有 WebEngine，会回退到系统默认浏览器。
 - “原生终端”调用 Windows 自带 OpenSSH 的 `ssh` 命令；如果用密码登录，需要在弹出的终端里手动输入密码。
 - 如果要使用密钥，请在配置里填写 Windows 路径，例如 `C:\Users\you\.ssh\id_ed25519`。

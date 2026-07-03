@@ -48,7 +48,7 @@ Windows portable 版本不需要安装 Python。配置文件保存在：
 - 支持跳板机、目标主机、端口转发、密码、密钥和 SSH keepalive。
 - 一键建立本地 Jupyter 隧道，并在应用内打开 Jupyter Lab。
 - 一键建立本地 RStudio Server 隧道，并在应用内打开 RStudio 网页。
-- 提供内置终端，也支持打开系统原生终端。
+- 提供内置真实终端；macOS 使用 SwiftTerm，Windows 使用内嵌 xterm.js 终端模拟器连接 SSH PTY，也支持打开系统原生终端。
 - 切换工作区时会保留已连接的 Jupyter/RStudio 隧道、终端和 SFTP 文件浏览状态，不会因为离开页面就丢掉连接、侧栏路径和列表。
 - 提供单个纯 SFTP 工作区；顶部每个标签都由左右 A/B 两栏共同组成，左侧默认 `127.0.0.1`，两栏都可从 Hosts 页面选择本地、终端工作区或自定义 SFTP 来源。
 - 浏览本地和远程目录，支持 A/B 两栏间拖拽上传、下载和远程传输；自定义 SFTP Host 在 Hosts 区用按钮新增、编辑和删除，不靠右键菜单。

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import base64
 import json
 import os
 import posixpath
@@ -21,7 +22,7 @@ import zipfile
 from pathlib import Path
 from typing import Callable
 
-from PySide6.QtCore import QByteArray, QMimeData, QObject, QSize, Qt, QTimer, QUrl, Signal
+from PySide6.QtCore import QByteArray, QMimeData, QObject, QSize, Qt, QTimer, QUrl, Signal, Slot
 from PySide6.QtGui import QColor, QDragEnterEvent, QDropEvent, QFont, QIcon, QPixmap, QTextCursor
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -58,6 +59,11 @@ try:
 except Exception:  # pragma: no cover - optional runtime fallback
     QWebEngineView = None
 
+try:
+    from PySide6.QtWebChannel import QWebChannel
+except Exception:  # pragma: no cover - optional runtime fallback
+    QWebChannel = None
+
 
 APP_NAME = "417ssh"
 
@@ -79,7 +85,7 @@ def app_version() -> str:
         text = version_file.read_text(encoding="utf-8").strip()
         if text:
             return text
-    return "0.4.3"
+    return "0.4.4"
 
 
 CURRENT_VERSION = app_version()
@@ -1140,6 +1146,188 @@ class RemoteFileTreeItem(QTreeWidgetItem):
         return left < right
 
 
+class XtermBridge(QObject):
+    input_received = Signal(str)
+    resize_requested = Signal(int, int)
+    ready = Signal()
+
+    @Slot(str)
+    def sendInput(self, data: str) -> None:
+        self.input_received.emit(data)
+
+    @Slot(int, int)
+    def resizeTerminal(self, columns: int, rows: int) -> None:
+        self.resize_requested.emit(columns, rows)
+
+    @Slot()
+    def terminalReady(self) -> None:
+        self.ready.emit()
+
+
+class XtermTerminalWidget(QFrame):
+    def __init__(self, controller: "MainWindow", profile_id: str, active: bool) -> None:
+        super().__init__()
+        if QWebEngineView is None or QWebChannel is None:
+            raise RuntimeError("Qt WebEngine 或 Qt WebChannel 不可用。")
+        self.controller = controller
+        self.profile_id = profile_id
+        self.active = active
+        self.ready = False
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        self.view = QWebEngineView()
+        self.view.setContextMenuPolicy(Qt.NoContextMenu)
+        layout.addWidget(self.view, 1)
+
+        self.bridge = XtermBridge()
+        self.bridge.input_received.connect(lambda data: self.controller.send_terminal_input(self.profile_id, data))
+        self.bridge.resize_requested.connect(lambda columns, rows: self.controller.resize_terminal(self.profile_id, columns, rows))
+        self.bridge.ready.connect(self.handle_ready)
+
+        self.channel = QWebChannel(self.view.page())
+        self.channel.registerObject("terminalBridge", self.bridge)
+        self.view.page().setWebChannel(self.channel)
+        self.view.setHtml(self.terminal_html(), QUrl.fromLocalFile(str(ASSETS_DIR) + os.sep))
+
+    @staticmethod
+    def assets_available() -> bool:
+        vendor = ASSETS_DIR / "vendor" / "xterm"
+        return (
+            QWebEngineView is not None
+            and QWebChannel is not None
+            and (vendor / "xterm.js").exists()
+            and (vendor / "xterm.css").exists()
+            and (vendor / "xterm-addon-fit.js").exists()
+        )
+
+    def terminal_html(self) -> str:
+        disabled = "true" if not self.active else "false"
+        return f"""
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <link rel="stylesheet" href="vendor/xterm/xterm.css">
+  <style>
+    html, body, #terminal {{
+      width: 100%;
+      height: 100%;
+      margin: 0;
+      overflow: hidden;
+      background: #101418;
+    }}
+    body {{
+      font-family: Consolas, "Cascadia Mono", "Microsoft YaHei UI", monospace;
+    }}
+    .xterm {{
+      padding: 8px;
+      box-sizing: border-box;
+    }}
+  </style>
+  <script src="qrc:///qtwebchannel/qwebchannel.js"></script>
+  <script src="vendor/xterm/xterm.js"></script>
+  <script src="vendor/xterm/xterm-addon-fit.js"></script>
+</head>
+<body>
+  <div id="terminal"></div>
+  <script>
+    const terminal = new Terminal({{
+      cursorBlink: true,
+      cursorStyle: "block",
+      fontFamily: 'Consolas, "Cascadia Mono", "Microsoft YaHei UI", monospace',
+      fontSize: 13,
+      lineHeight: 1.15,
+      scrollback: 5000,
+      convertEol: false,
+      disableStdin: {disabled},
+      theme: {{
+        background: "#101418",
+        foreground: "#e4e8ec",
+        cursor: "#73d13d",
+        selectionBackground: "#365273"
+      }}
+    }});
+    const fitAddon = new FitAddon.FitAddon();
+    window.terminal = terminal;
+    terminal.loadAddon(fitAddon);
+    terminal.open(document.getElementById("terminal"));
+    terminal.focus();
+
+    function fitAndNotify() {{
+      try {{
+        fitAddon.fit();
+        if (window.terminalBridge && terminal.cols && terminal.rows) {{
+          window.terminalBridge.resizeTerminal(terminal.cols, terminal.rows);
+        }}
+      }} catch (error) {{
+        console.error(error);
+      }}
+    }}
+
+    window.termWrite = function(base64Text) {{
+      try {{
+        const binary = atob(base64Text);
+        const bytes = new Uint8Array(binary.length);
+        for (let index = 0; index < binary.length; index++) {{
+          bytes[index] = binary.charCodeAt(index);
+        }}
+        const text = new TextDecoder("utf-8").decode(bytes);
+        terminal.write(text);
+      }} catch (error) {{
+        console.error(error);
+      }}
+    }};
+
+    window.termClear = function() {{
+      terminal.clear();
+      terminal.focus();
+    }};
+
+    new QWebChannel(qt.webChannelTransport, function(channel) {{
+      window.terminalBridge = channel.objects.terminalBridge;
+      terminal.onData(function(data) {{
+        window.terminalBridge.sendInput(data);
+      }});
+      terminal.onResize(function(size) {{
+        window.terminalBridge.resizeTerminal(size.cols, size.rows);
+      }});
+      setTimeout(fitAndNotify, 0);
+      setTimeout(fitAndNotify, 80);
+      window.terminalBridge.terminalReady();
+    }});
+
+    window.addEventListener("resize", function() {{
+      setTimeout(fitAndNotify, 0);
+    }});
+    document.body.addEventListener("click", function() {{
+      terminal.focus();
+    }});
+  </script>
+</body>
+</html>
+"""
+
+    def handle_ready(self) -> None:
+        self.ready = True
+        self.write_terminal_data(self.controller.terminal_text_for(self.profile_id))
+
+    def write_terminal_data(self, text: str) -> None:
+        if not text or not self.ready:
+            return
+        encoded = base64.b64encode(text.encode("utf-8", errors="replace")).decode("ascii")
+        self.view.page().runJavaScript(f"window.termWrite && window.termWrite('{encoded}');")
+
+    def clear_terminal(self) -> None:
+        if self.ready:
+            self.view.page().runJavaScript("window.termClear && window.termClear();")
+
+    def focus_terminal(self) -> None:
+        self.view.setFocus()
+        if self.ready:
+            self.view.page().runJavaScript("terminal && terminal.focus();")
+
+
 class InteractiveTerminal(QPlainTextEdit):
     def __init__(self, controller: "MainWindow", profile_id: str, active: bool) -> None:
         super().__init__()
@@ -1151,7 +1339,7 @@ class InteractiveTerminal(QPlainTextEdit):
         self.setAcceptDrops(False)
         self.setFont(QFont("Consolas", 10))
         self.setStyleSheet("background: #101418; color: #e4e8ec; border-radius: 6px;")
-        self.setPlainText(controller.terminal_text_for(profile_id) if active else "")
+        self.setPlainText(controller.terminal_plain_text_for(profile_id) if active else "")
         self.moveCursor(QTextCursor.End)
         self.setFocusPolicy(Qt.StrongFocus)
 
@@ -2150,6 +2338,7 @@ class MainWindow(QMainWindow):
         self.terminals: dict[str, TerminalSession] = {}
         self.terminal_status_by_profile: dict[str, str] = {}
         self.terminal_text_by_profile: dict[str, str] = {}
+        self.terminal_plain_text_by_profile: dict[str, str] = {}
         self.terminal_input_buffers_by_profile: dict[str, str] = {}
         self.sftp_status = "文件空闲"
         self.remote_entries: list[RemoteFileEntry] = []
@@ -2339,6 +2528,9 @@ class MainWindow(QMainWindow):
 
     def terminal_text_for(self, profile_id: str) -> str:
         return self.terminal_text_by_profile.get(profile_id, "")
+
+    def terminal_plain_text_for(self, profile_id: str) -> str:
+        return self.terminal_plain_text_by_profile.get(profile_id, "")
 
     def select_profile(self, profile_id: str) -> None:
         self.save_current_terminal_file_state()
@@ -2943,7 +3135,10 @@ class MainWindow(QMainWindow):
         title = QLabel("SSH 终端")
         title.setStyleSheet("font-weight: 700;")
         top.addWidget(title)
-        top.addWidget(StatusPill("可直接输入" if active else "未连接", "#1f9d55" if active else "#6b7280"))
+        has_real_terminal = XtermTerminalWidget.assets_available()
+        terminal_pill_text = "真实终端" if active and has_real_terminal else ("简易回退" if active else "未连接")
+        terminal_pill_color = "#1f9d55" if active and has_real_terminal else ("#b96200" if active else "#6b7280")
+        top.addWidget(StatusPill(terminal_pill_text, terminal_pill_color))
         top.addStretch(1)
         clear = QPushButton("清空")
         clear.clicked.connect(self.clear_terminal)
@@ -2955,9 +3150,13 @@ class MainWindow(QMainWindow):
         top.addWidget(ctrl_c)
         layout.addLayout(top)
 
-        self.terminal_widget = InteractiveTerminal(self, profile.id, active)
+        if has_real_terminal:
+            self.terminal_widget = XtermTerminalWidget(self, profile.id, active)
+        else:
+            self.terminal_widget = InteractiveTerminal(self, profile.id, active)
         self.terminal_widget.setProperty("profile_id", profile.id)
-        self.terminal_widget.moveCursor(QTextCursor.End)
+        if hasattr(self.terminal_widget, "moveCursor"):
+            self.terminal_widget.moveCursor(QTextCursor.End)
         layout.addWidget(self.terminal_widget, 1)
 
         return pane
@@ -3054,6 +3253,7 @@ class MainWindow(QMainWindow):
         self.disconnect_terminal(profile, update_ui=False)
         self.terminal_status_by_profile[profile.id] = "connecting"
         self.terminal_text_by_profile[profile.id] = ""
+        self.terminal_plain_text_by_profile[profile.id] = ""
         self.terminal_input_buffers_by_profile[profile.id] = ""
         terminal = TerminalSession(
             profile,
@@ -3079,18 +3279,25 @@ class MainWindow(QMainWindow):
 
     def append_terminal_output(self, profile_id: str, text: str) -> None:
         text = self.extract_terminal_directory_updates(profile_id, text)
-        previous = self.terminal_text_by_profile.get(profile_id, "")
-        rendered = self.apply_terminal_output(previous, self.strip_terminal_control_sequences(text))[-100000:]
-        self.terminal_text_by_profile[profile_id] = rendered
+        raw = (self.terminal_text_by_profile.get(profile_id, "") + text)[-200000:]
+        plain = self.apply_terminal_output(
+            self.terminal_plain_text_by_profile.get(profile_id, ""),
+            self.strip_terminal_control_sequences(text),
+        )[-100000:]
+        self.terminal_text_by_profile[profile_id] = raw
+        self.terminal_plain_text_by_profile[profile_id] = plain
         widget = getattr(self, "terminal_widget", None)
         if widget is not None and widget.property("profile_id") == profile_id:
-            current = widget.toPlainText()
-            if rendered.startswith(current):
-                widget.moveCursor(QTextCursor.End)
-                widget.insertPlainText(rendered[len(current) :])
+            if hasattr(widget, "write_terminal_data"):
+                widget.write_terminal_data(text)
             else:
-                widget.setPlainText(rendered)
-            widget.moveCursor(QTextCursor.End)
+                current = widget.toPlainText()
+                if plain.startswith(current):
+                    widget.moveCursor(QTextCursor.End)
+                    widget.insertPlainText(plain[len(current) :])
+                else:
+                    widget.setPlainText(plain)
+                widget.moveCursor(QTextCursor.End)
 
     def extract_terminal_directory_updates(self, profile_id: str, text: str) -> str:
         def update(match: re.Match[str]) -> str:
@@ -3163,9 +3370,13 @@ class MainWindow(QMainWindow):
         if profile is None:
             return
         self.terminal_text_by_profile[profile.id] = ""
+        self.terminal_plain_text_by_profile[profile.id] = ""
         widget = getattr(self, "terminal_widget", None)
         if widget is not None and widget.property("profile_id") == profile.id:
-            widget.clear()
+            if hasattr(widget, "clear_terminal"):
+                widget.clear_terminal()
+            else:
+                widget.clear()
 
     def send_terminal_input(self, profile_id: str, text: str, record_input: bool = True) -> None:
         terminal = self.terminals.get(profile_id)
@@ -3205,7 +3416,10 @@ class MainWindow(QMainWindow):
         self.send_terminal_text(profile, command)
         widget = getattr(self, "terminal_widget", None)
         if widget is not None and widget.property("profile_id") == profile.id:
-            widget.setFocus()
+            if hasattr(widget, "focus_terminal"):
+                widget.focus_terminal()
+            else:
+                widget.setFocus()
 
     def sync_sftp_to_terminal_directory(self, profile: SSHProfile) -> None:
         if self.terminal_status_for(profile.id) != "connected":
@@ -3232,7 +3446,12 @@ class MainWindow(QMainWindow):
 
     def record_terminal_input(self, profile_id: str, text: str) -> None:
         buffer = self.terminal_input_buffers_by_profile.get(profile_id, "")
-        for character in text:
+        index = 0
+        while index < len(text):
+            character = text[index]
+            if character == "\x1b":
+                index = self.skip_terminal_input_escape(text, index)
+                continue
             if character in {"\r", "\n"}:
                 command = buffer.strip()
                 buffer = ""
@@ -3246,7 +3465,24 @@ class MainWindow(QMainWindow):
                 buffer += " "
             elif ord(character) >= 32:
                 buffer += character
+            index += 1
         self.terminal_input_buffers_by_profile[profile_id] = buffer[-4096:]
+
+    def skip_terminal_input_escape(self, text: str, start: int) -> int:
+        index = start + 1
+        if index >= len(text):
+            return index
+        if text[index] == "[":
+            index += 1
+            while index < len(text):
+                code = ord(text[index])
+                index += 1
+                if 0x40 <= code <= 0x7E:
+                    break
+            return index
+        if text[index] == "O":
+            return min(len(text), index + 2)
+        return min(len(text), index + 1)
 
     def record_terminal_directory_command(self, profile_id: str, command: str) -> None:
         directory = self.directory_after_cd_command(profile_id, command)

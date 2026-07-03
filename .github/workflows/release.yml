@@ -202,9 +202,11 @@ jobs:
           417ssh $VERSION portable packages.
 
           Highlights:
+          - Windows built-in terminal now uses a bundled xterm.js terminal emulator connected to the Paramiko SSH PTY, instead of rendering terminal output in a simulated text box.
+          - Windows terminal now lets xterm.js handle ANSI, cursor movement, alternate screen, full-screen terminal apps, selection, paste, and resize behavior.
           - Windows now keeps Jupyter/RStudio tunnels and terminal sessions per workspace, matching the macOS behavior when switching between workspaces.
-          - Windows built-in terminal now accepts keyboard input directly in the terminal pane through the SSH PTY, with Ctrl-C, paste, arrow keys, and PTY resize support.
-          - Windows terminal output is cleaned of common ANSI/OSC control sequences while still tracking OSC 7 and typed \`cd ...\` commands for SFTP directory sync.
+          - Windows built-in terminal accepts keyboard input directly in the terminal pane through the SSH PTY, with Ctrl-C, paste, arrow keys, and PTY resize support.
+          - Windows terminal still tracks OSC 7 and typed \`cd ...\` commands for SFTP directory sync while passing the raw terminal stream to xterm.js.
           - Windows portable startup now bundles the dynamically loaded core module dependencies, including uuid, tkinter, and Paramiko.
           - Terminal SFTP path-to-terminal now inserts \`cd <path>\`, so pressing Enter in the terminal enters that directory directly.
           - Sync-to-terminal-folder and auto-sync no longer inject a visible \`printf ...\` probe into the shell.
