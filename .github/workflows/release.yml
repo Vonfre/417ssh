@@ -202,6 +202,7 @@ jobs:
           417ssh $VERSION portable packages.
 
           Highlights:
+          - Windows portable startup now bundles the dynamically loaded core module dependencies, including uuid, tkinter, and Paramiko.
           - Terminal SFTP path-to-terminal now inserts \`cd <path>\`, so pressing Enter in the terminal enters that directory directly.
           - Sync-to-terminal-folder and auto-sync no longer inject a visible \`printf ...\` probe into the shell.
           - Auto-sync follows terminal \`cd ...\` commands and OSC 7 current-directory reports, then refreshes the SFTP side panel.

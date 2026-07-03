@@ -79,7 +79,7 @@ def app_version() -> str:
         text = version_file.read_text(encoding="utf-8").strip()
         if text:
             return text
-    return "0.4.1"
+    return "0.4.2"
 
 
 CURRENT_VERSION = app_version()
