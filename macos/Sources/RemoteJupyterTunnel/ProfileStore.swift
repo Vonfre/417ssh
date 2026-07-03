@@ -75,6 +75,17 @@ final class ProfileStore: ObservableObject {
         return profile
     }
 
+    @discardableResult
+    func addCustomSFTPProfile() -> SSHProfile {
+        let kind: WorkspaceKind = .sftp
+        let kindCount = profiles.filter { $0.workspaceKind == kind }.count
+        var profile = SSHProfile.blank(number: kindCount + 1, kind: kind)
+        profile.name = nextProfileName(base: "自定义 SFTP")
+        profiles.append(profile)
+        save()
+        return profile
+    }
+
     func duplicateSelectedProfile() {
         guard var profile = selectedProfile else { return }
         profile.id = UUID()

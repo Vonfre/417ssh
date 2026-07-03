@@ -13,6 +13,7 @@ struct ContentView: View {
     @State private var editingProfileID: UUID?
     @State private var pendingNewProfileID: UUID?
     @State private var selectionBeforeNewProfile: UUID?
+    @State private var selectionAfterEditingProfile: UUID?
     @State private var isShowingSettings = false
 
     var body: some View {
@@ -42,6 +43,20 @@ struct ContentView: View {
                         profileBox: store.binding(for: profile),
                         onEdit: {
                             beginEditingProfile(profile.id)
+                        },
+                        onEditProfile: { profileID in
+                            beginEditingProfile(profileID, returnSelectionID: profile.id)
+                        },
+                        onAddCustomSFTP: {
+                            let customProfile = store.addCustomSFTPProfile()
+                            pendingNewProfileID = customProfile.id
+                            selectionBeforeNewProfile = profile.id
+                            selectionAfterEditingProfile = profile.id
+                            editingProfileID = customProfile.id
+                            return customProfile
+                        },
+                        onDeleteCustomSFTP: { profileID in
+                            store.deleteProfile(id: profileID, fallbackSelectionID: profile.id)
                         }
                     )
                 }
@@ -257,27 +272,32 @@ struct ContentView: View {
         editingProfileID = profile.id
     }
 
-    private func beginEditingProfile(_ profileID: UUID) {
+    private func beginEditingProfile(_ profileID: UUID, returnSelectionID: UUID? = nil) {
         pendingNewProfileID = nil
         selectionBeforeNewProfile = nil
+        selectionAfterEditingProfile = returnSelectionID
         editingProfileID = profileID
     }
 
     private func saveEditingProfile(_ profile: SSHProfile) {
         store.updateProfile(profile)
-        store.selectedProfileID = profile.id
+        store.selectedProfileID = selectionAfterEditingProfile ?? profile.id
         editingProfileID = nil
         pendingNewProfileID = nil
         selectionBeforeNewProfile = nil
+        selectionAfterEditingProfile = nil
     }
 
     private func cancelEditingProfile() {
         if let pendingNewProfileID {
             store.deleteProfile(id: pendingNewProfileID, fallbackSelectionID: selectionBeforeNewProfile)
+        } else if let selectionAfterEditingProfile {
+            store.selectedProfileID = selectionAfterEditingProfile
         }
         editingProfileID = nil
         pendingNewProfileID = nil
         selectionBeforeNewProfile = nil
+        selectionAfterEditingProfile = nil
     }
 
     private func isProfileActive(_ profile: SSHProfile) -> Bool {
@@ -1616,7 +1636,12 @@ private struct SFTPWorkspacePaneState: Identifiable, Equatable {
     var remotePathText = "."
 }
 
-private struct SFTPTabState: Identifiable, Equatable {
+private enum SFTPSide: String, CaseIterable {
+    case left = "A"
+    case right = "B"
+}
+
+private struct SFTPSideState: Identifiable, Equatable {
     let id = UUID()
     var sourceKey: String?
     var title: String
@@ -1626,12 +1651,27 @@ private struct SFTPTabState: Identifiable, Equatable {
     var sortColumn: RemoteFileSortColumn = .name
     var sortAscending = true
 
-    static func local() -> SFTPTabState {
-        SFTPTabState(sourceKey: SFTPSource.localKey, title: "127.0.0.1", pathText: NSHomeDirectory())
+    static func local() -> SFTPSideState {
+        SFTPSideState(sourceKey: SFTPSource.localKey, title: "127.0.0.1", pathText: NSHomeDirectory())
     }
 
-    static func empty() -> SFTPTabState {
-        SFTPTabState(sourceKey: nil, title: "新标签", pathText: NSHomeDirectory())
+    static func empty() -> SFTPSideState {
+        SFTPSideState(sourceKey: nil, title: "选择主机", pathText: NSHomeDirectory())
+    }
+}
+
+private struct SFTPTabState: Identifiable, Equatable {
+    let id = UUID()
+    var title: String
+    var left: SFTPSideState
+    var right: SFTPSideState
+
+    static func first() -> SFTPTabState {
+        SFTPTabState(title: "SFTP 1", left: .local(), right: .empty())
+    }
+
+    static func empty(number: Int) -> SFTPTabState {
+        SFTPTabState(title: "SFTP \(number)", left: .local(), right: .empty())
     }
 }
 
@@ -1657,6 +1697,16 @@ private struct SFTPSource: Identifiable, Equatable {
             profile: nil
         )
     }
+
+    static func profile(_ profile: SSHProfile) -> SFTPSource {
+        SFTPSource(
+            id: "profile:\(profile.id.uuidString)",
+            title: profile.name,
+            subtitle: profile.targetAddress.isEmpty ? "未填写目标主机" : profile.targetAddress,
+            systemImage: profile.workspaceKind == .terminal ? "terminal" : "server.rack",
+            profile: profile
+        )
+    }
 }
 
 private struct SFTPWorkspaceView: View {
@@ -1664,10 +1714,13 @@ private struct SFTPWorkspaceView: View {
 
     let profileBox: BindingBox<SSHProfile>
     let onEdit: () -> Void
+    let onEditProfile: (UUID) -> Void
+    let onAddCustomSFTP: () -> SSHProfile
+    let onDeleteCustomSFTP: (UUID) -> Void
 
-    @State private var tabs: [SFTPTabState] = [.local()]
+    @State private var tabs: [SFTPTabState] = [.first()]
     @State private var selectedTabID: UUID?
-    @State private var tabManagers: [UUID: SFTPManager] = [:]
+    @State private var sideManagers: [UUID: SFTPManager] = [:]
 
     private var currentProfile: SSHProfile {
         profileBox.get()
@@ -1676,15 +1729,7 @@ private struct SFTPWorkspaceView: View {
     private var sources: [SFTPSource] {
         let remoteSources = store.profiles
             .filter { $0.workspaceKind == .terminal || $0.workspaceKind == .sftp }
-            .map { profile in
-                SFTPSource(
-                    id: "profile:\(profile.id.uuidString)",
-                    title: profile.name,
-                    subtitle: profile.targetAddress.isEmpty ? "未填写目标主机" : profile.targetAddress,
-                    systemImage: profile.workspaceKind == .terminal ? "terminal" : "server.rack",
-                    profile: profile
-                )
-            }
+            .map(SFTPSource.profile)
         return [.local] + remoteSources
     }
 
@@ -1706,10 +1751,24 @@ private struct SFTPWorkspaceView: View {
                 SFTPTabContentView(
                     tab: tabBinding(activeTab.id),
                     sources: sources,
+                    workspaceProfileID: currentProfile.id,
                     availableProfiles: sources.compactMap(\.profile),
-                    sftp: manager(for: activeTab.id),
-                    onSelectSource: { source in
-                        select(source, for: activeTab.id)
+                    leftSFTP: manager(for: activeTab.left.id),
+                    rightSFTP: manager(for: activeTab.right.id),
+                    onSelectSource: { side, source in
+                        select(source, for: activeTab.id, side: side)
+                    },
+                    onClearSource: { side in
+                        clearSource(for: activeTab.id, side: side)
+                    },
+                    onEditProfile: onEditProfile,
+                    onAddCustomSFTP: {
+                        let profile = onAddCustomSFTP()
+                        let source = SFTPSource.profile(profile)
+                        select(source, for: activeTab.id, side: $0)
+                    },
+                    onDeleteCustomSFTP: { profileID in
+                        onDeleteCustomSFTP(profileID)
                     }
                 )
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -1732,7 +1791,7 @@ private struct SFTPWorkspaceView: View {
 
             StatusDot(text: "\(tabs.count) 个标签", color: AppTheme.workspaceColor(.sftp))
 
-            Text("默认本地，可在标签内选择终端工作区或自定义 SFTP")
+            Text("每个标签包含 A/B 两栏，可左右拖拽传输")
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
@@ -1773,10 +1832,10 @@ private struct SFTPWorkspaceView: View {
     private func sftpTabButton(_ tab: SFTPTabState) -> some View {
         let isSelected = activeTab?.id == tab.id
         return HStack(spacing: 6) {
-            Image(systemName: tab.sourceKey == SFTPSource.localKey ? "desktopcomputer" : "folder")
+            Image(systemName: "rectangle.split.2x1")
                 .font(.system(size: 12, weight: .semibold))
 
-            Text(tab.title)
+            Text(tabTitle(tab))
                 .font(.caption.weight(.semibold))
                 .lineLimit(1)
 
@@ -1818,7 +1877,7 @@ private struct SFTPWorkspaceView: View {
 
     private func ensureTabs() {
         if tabs.isEmpty {
-            tabs = [.local()]
+            tabs = [.first()]
         }
         selectedTabID = selectedTabID ?? tabs.first?.id
         ensureManagers()
@@ -1828,60 +1887,104 @@ private struct SFTPWorkspaceView: View {
     private func normalizeTabs() {
         let sourceIDs = Set(sources.map(\.id))
         for index in tabs.indices {
-            if let sourceKey = tabs[index].sourceKey, !sourceIDs.contains(sourceKey) {
-                tabs[index].sourceKey = nil
-                tabs[index].title = "选择主机"
-                tabs[index].selectedEntry = nil
-                tabs[index].pathText = NSHomeDirectory()
-            }
+            normalizeSide(&tabs[index].left, sourceIDs: sourceIDs)
+            normalizeSide(&tabs[index].right, sourceIDs: sourceIDs)
         }
         ensureManagers()
-        let tabIDs = Set(tabs.map(\.id))
-        for managerID in tabManagers.keys where !tabIDs.contains(managerID) {
-            tabManagers[managerID]?.cancel()
-            tabManagers.removeValue(forKey: managerID)
+        let sideIDs = Set(tabs.flatMap { [$0.left.id, $0.right.id] })
+        for managerID in sideManagers.keys where !sideIDs.contains(managerID) {
+            sideManagers[managerID]?.cancel()
+            sideManagers.removeValue(forKey: managerID)
         }
     }
 
     private func addTab() {
-        let tab = SFTPTabState.empty()
+        let tab = SFTPTabState.empty(number: tabs.count + 1)
         tabs.append(tab)
-        tabManagers[tab.id] = SFTPManager()
+        sideManagers[tab.left.id] = SFTPManager()
+        sideManagers[tab.right.id] = SFTPManager()
         selectedTabID = tab.id
     }
 
     private func closeTab(_ tabID: UUID) {
         guard tabs.count > 1 else { return }
         guard let index = tabs.firstIndex(where: { $0.id == tabID }) else { return }
+        let tab = tabs[index]
         tabs.remove(at: index)
-        tabManagers[tabID]?.cancel()
-        tabManagers.removeValue(forKey: tabID)
+        for sideID in [tab.left.id, tab.right.id] {
+            sideManagers[sideID]?.cancel()
+            sideManagers.removeValue(forKey: sideID)
+        }
         if selectedTabID == tabID {
             selectedTabID = tabs[min(index, tabs.count - 1)].id
         }
     }
 
-    private func select(_ source: SFTPSource, for tabID: UUID) {
+    private func select(_ source: SFTPSource, for tabID: UUID, side: SFTPSide) {
         guard let index = tabs.firstIndex(where: { $0.id == tabID }) else { return }
-        tabs[index].sourceKey = source.id
-        tabs[index].title = source.title
-        tabs[index].selectedEntry = nil
-        tabs[index].pathText = source.isLocal ? NSHomeDirectory() : "."
-        if tabManagers[tabID] == nil {
-            tabManagers[tabID] = SFTPManager()
+        var pane = paneState(for: side, in: tabs[index])
+        pane.sourceKey = source.id
+        pane.title = source.title
+        pane.selectedEntry = nil
+        pane.pathText = source.isLocal ? NSHomeDirectory() : "."
+        pane.filterText = ""
+        setPaneState(pane, for: side, in: index)
+
+        if sideManagers[pane.id] == nil {
+            sideManagers[pane.id] = SFTPManager()
         }
-        tabManagers[tabID]?.cancel()
-        tabManagers[tabID]?.clear()
+        sideManagers[pane.id]?.cancel()
+        sideManagers[pane.id]?.clear()
+    }
+
+    private func clearSource(for tabID: UUID, side: SFTPSide) {
+        guard let index = tabs.firstIndex(where: { $0.id == tabID }) else { return }
+        var pane = paneState(for: side, in: tabs[index])
+        pane.sourceKey = nil
+        pane.title = "选择主机"
+        pane.selectedEntry = nil
+        pane.pathText = NSHomeDirectory()
+        pane.filterText = ""
+        setPaneState(pane, for: side, in: index)
+        sideManagers[pane.id]?.cancel()
+        sideManagers[pane.id]?.clear()
     }
 
     private func ensureManagers() {
-        for tab in tabs where tabManagers[tab.id] == nil {
-            tabManagers[tab.id] = SFTPManager()
+        for tab in tabs {
+            for sideID in [tab.left.id, tab.right.id] where sideManagers[sideID] == nil {
+                sideManagers[sideID] = SFTPManager()
+            }
         }
     }
 
-    private func manager(for tabID: UUID) -> SFTPManager {
-        tabManagers[tabID] ?? SFTPManager.shared
+    private func manager(for sideID: UUID) -> SFTPManager {
+        sideManagers[sideID] ?? SFTPManager.shared
+    }
+
+    private func normalizeSide(_ side: inout SFTPSideState, sourceIDs: Set<String>) {
+        if let sourceKey = side.sourceKey, !sourceIDs.contains(sourceKey) {
+            side.sourceKey = nil
+            side.title = "选择主机"
+            side.selectedEntry = nil
+            side.pathText = NSHomeDirectory()
+        }
+    }
+
+    private func paneState(for side: SFTPSide, in tab: SFTPTabState) -> SFTPSideState {
+        side == .left ? tab.left : tab.right
+    }
+
+    private func setPaneState(_ pane: SFTPSideState, for side: SFTPSide, in index: Int) {
+        if side == .left {
+            tabs[index].left = pane
+        } else {
+            tabs[index].right = pane
+        }
+    }
+
+    private func tabTitle(_ tab: SFTPTabState) -> String {
+        "\(tab.title)  A:\(tab.left.title)  B:\(tab.right.title)"
     }
 }
 
@@ -1889,42 +1992,155 @@ private struct SFTPTabContentView: View {
     @Binding var tab: SFTPTabState
 
     let sources: [SFTPSource]
+    let workspaceProfileID: UUID
     let availableProfiles: [SSHProfile]
-    @ObservedObject var sftp: SFTPManager
-    let onSelectSource: (SFTPSource) -> Void
-
-    private var selectedSource: SFTPSource? {
-        guard let sourceKey = tab.sourceKey else { return nil }
-        return sources.first { $0.id == sourceKey }
-    }
+    @ObservedObject var leftSFTP: SFTPManager
+    @ObservedObject var rightSFTP: SFTPManager
+    let onSelectSource: (SFTPSide, SFTPSource) -> Void
+    let onClearSource: (SFTPSide) -> Void
+    let onEditProfile: (UUID) -> Void
+    let onAddCustomSFTP: (SFTPSide) -> Void
+    let onDeleteCustomSFTP: (UUID) -> Void
 
     var body: some View {
-        if let source = selectedSource {
-            if source.isLocal {
-                LocalFileBrowserPane(
-                    tab: $tab,
-                    availableProfiles: availableProfiles
-                )
-            } else if let profile = source.profile {
-                RemoteSFTPTabPane(
-                    tab: $tab,
-                    profile: profile,
-                    availableProfiles: availableProfiles,
-                    sftp: sftp
-                )
-            } else {
-                SFTPHostPickerView(sources: sources, selectedSourceID: tab.sourceKey, onSelect: onSelectSource)
-            }
-        } else {
-            SFTPHostPickerView(sources: sources, selectedSourceID: tab.sourceKey, onSelect: onSelectSource)
+        HStack(spacing: 0) {
+            SFTPSideContentView(
+                side: .left,
+                pane: $tab.left,
+                sources: sources,
+                workspaceProfileID: workspaceProfileID,
+                availableProfiles: availableProfiles,
+                sftp: leftSFTP,
+                onSelectSource: { source in onSelectSource(.left, source) },
+                onClearSource: { onClearSource(.left) },
+                onEditProfile: onEditProfile,
+                onAddCustomSFTP: { onAddCustomSFTP(.left) },
+                onDeleteCustomSFTP: onDeleteCustomSFTP
+            )
+
+            Divider()
+
+            SFTPSideContentView(
+                side: .right,
+                pane: $tab.right,
+                sources: sources,
+                workspaceProfileID: workspaceProfileID,
+                availableProfiles: availableProfiles,
+                sftp: rightSFTP,
+                onSelectSource: { source in onSelectSource(.right, source) },
+                onClearSource: { onClearSource(.right) },
+                onEditProfile: onEditProfile,
+                onAddCustomSFTP: { onAddCustomSFTP(.right) },
+                onDeleteCustomSFTP: onDeleteCustomSFTP
+            )
         }
     }
 }
 
+private struct SFTPSideContentView: View {
+    let side: SFTPSide
+    @Binding var pane: SFTPSideState
+
+    let sources: [SFTPSource]
+    let workspaceProfileID: UUID
+    let availableProfiles: [SSHProfile]
+    @ObservedObject var sftp: SFTPManager
+    let onSelectSource: (SFTPSource) -> Void
+    let onClearSource: () -> Void
+    let onEditProfile: (UUID) -> Void
+    let onAddCustomSFTP: () -> Void
+    let onDeleteCustomSFTP: (UUID) -> Void
+
+    private var selectedSource: SFTPSource? {
+        guard let sourceKey = pane.sourceKey else { return nil }
+        return sources.first { $0.id == sourceKey }
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            sideHeader
+            Divider()
+
+            Group {
+                if let source = selectedSource {
+                    if source.isLocal {
+                        LocalFileBrowserPane(
+                            pane: $pane,
+                            availableProfiles: availableProfiles
+                        )
+                    } else if let profile = source.profile {
+                        RemoteSFTPTabPane(
+                            pane: $pane,
+                            profile: profile,
+                            availableProfiles: availableProfiles,
+                            sftp: sftp
+                        )
+                    } else {
+                        hostPicker
+                    }
+                } else {
+                    hostPicker
+                }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+        .frame(minWidth: 320, maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private var sideHeader: some View {
+        HStack(spacing: 8) {
+            Text(side.rawValue)
+                .font(.caption.weight(.bold))
+                .foregroundStyle(.white)
+                .frame(width: 22, height: 22)
+                .background(Color.accentColor, in: RoundedRectangle(cornerRadius: 5, style: .continuous))
+
+            Text(pane.title)
+                .font(.caption.weight(.semibold))
+                .lineLimit(1)
+                .truncationMode(.middle)
+
+            Spacer(minLength: 0)
+
+            if pane.sourceKey != nil {
+                Button {
+                    onClearSource()
+                } label: {
+                    Label("切换 Host", systemImage: "rectangle.2.swap")
+                }
+                .labelStyle(.titleAndIcon)
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+            }
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 7)
+        .background(Color(nsColor: .controlBackgroundColor).opacity(0.45))
+    }
+
+    private var hostPicker: some View {
+        SFTPHostPickerView(
+            side: side,
+            sources: sources,
+            selectedSourceID: pane.sourceKey,
+            workspaceProfileID: workspaceProfileID,
+            onSelect: onSelectSource,
+            onEditProfile: onEditProfile,
+            onAddCustomSFTP: onAddCustomSFTP,
+            onDeleteCustomSFTP: onDeleteCustomSFTP
+        )
+    }
+}
+
 private struct SFTPHostPickerView: View {
+    let side: SFTPSide
     let sources: [SFTPSource]
     let selectedSourceID: String?
+    let workspaceProfileID: UUID
     let onSelect: (SFTPSource) -> Void
+    let onEditProfile: (UUID) -> Void
+    let onAddCustomSFTP: () -> Void
+    let onDeleteCustomSFTP: (UUID) -> Void
 
     private let columns = [
         GridItem(.adaptive(minimum: 260, maximum: 380), spacing: 14, alignment: .top)
@@ -1933,17 +2149,24 @@ private struct SFTPHostPickerView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 14) {
-                Text("Hosts")
-                    .font(.title3.weight(.bold))
+                HStack(spacing: 10) {
+                    Text("Hosts \(side.rawValue)")
+                        .font(.title3.weight(.bold))
+
+                    Spacer(minLength: 0)
+
+                    Button {
+                        onAddCustomSFTP()
+                    } label: {
+                        Label("新增自定义 SFTP", systemImage: "plus")
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                }
 
                 LazyVGrid(columns: columns, alignment: .leading, spacing: 14) {
                     ForEach(sources) { source in
-                        Button {
-                            onSelect(source)
-                        } label: {
-                            hostCard(source)
-                        }
-                        .buttonStyle(.plain)
+                        hostCard(source)
                     }
                 }
             }
@@ -1955,28 +2178,59 @@ private struct SFTPHostPickerView: View {
 
     private func hostCard(_ source: SFTPSource) -> some View {
         let isSelected = selectedSourceID == source.id
-        return HStack(spacing: 14) {
-            Image(systemName: source.systemImage)
-                .font(.system(size: 26, weight: .bold))
-                .foregroundStyle(source.isLocal ? Color.white : Color.white)
-                .frame(width: 54, height: 54)
-                .background(source.isLocal ? Color.black : Color.orange, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+        let canManage = source.profile?.workspaceKind == .sftp && source.profile?.id != workspaceProfileID
+        return HStack(spacing: 8) {
+            Button {
+                onSelect(source)
+            } label: {
+                HStack(spacing: 14) {
+                    Image(systemName: source.systemImage)
+                        .font(.system(size: 26, weight: .bold))
+                        .foregroundStyle(Color.white)
+                        .frame(width: 54, height: 54)
+                        .background(source.isLocal ? Color.black : Color.orange, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
 
-            VStack(alignment: .leading, spacing: 5) {
-                Text(source.title)
-                    .font(.headline.weight(.semibold))
-                    .foregroundStyle(.primary)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
+                    VStack(alignment: .leading, spacing: 5) {
+                        Text(source.title)
+                            .font(.headline.weight(.semibold))
+                            .foregroundStyle(.primary)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
 
-                Text(source.subtitle)
-                    .font(.subheadline.weight(.medium))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
+                        Text(source.subtitle)
+                            .font(.subheadline.weight(.medium))
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                    }
+
+                    Spacer(minLength: 0)
+                }
             }
+            .buttonStyle(.plain)
 
-            Spacer(minLength: 0)
+            if canManage, let profileID = source.profile?.id {
+                VStack(spacing: 6) {
+                    Button {
+                        onEditProfile(profileID)
+                    } label: {
+                        Image(systemName: "pencil")
+                            .frame(width: 24, height: 22)
+                    }
+                    .buttonStyle(.plain)
+                    .help("编辑这个自定义 SFTP")
+
+                    Button {
+                        confirmDelete(profileID: profileID, title: source.title)
+                    } label: {
+                        Image(systemName: "trash")
+                            .frame(width: 24, height: 22)
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(.red)
+                    .help("删除这个自定义 SFTP")
+                }
+            }
         }
         .padding(.horizontal, 16)
         .frame(height: 88)
@@ -1986,10 +2240,21 @@ private struct SFTPHostPickerView: View {
                 .stroke(isSelected ? Color.accentColor : Color(nsColor: .separatorColor).opacity(0.35), lineWidth: isSelected ? 2 : 1)
         }
     }
+
+    private func confirmDelete(profileID: UUID, title: String) {
+        let alert = NSAlert()
+        alert.messageText = "删除自定义 SFTP"
+        alert.informativeText = "确定删除“\(title)”吗？这个操作只会删除 Host 配置，不会删除服务器上的文件。"
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "删除")
+        alert.addButton(withTitle: "取消")
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        onDeleteCustomSFTP(profileID)
+    }
 }
 
 private struct RemoteSFTPTabPane: View {
-    @Binding var tab: SFTPTabState
+    @Binding var pane: SFTPSideState
 
     let profile: SSHProfile
     let availableProfiles: [SSHProfile]
@@ -2005,8 +2270,8 @@ private struct RemoteSFTPTabPane: View {
                 RemoteFileBrowserPane(
                     profile: profile,
                     availableProfiles: availableProfiles,
-                    selectedEntry: $tab.selectedEntry,
-                    remotePathText: $tab.pathText
+                    selectedEntry: $pane.selectedEntry,
+                    remotePathText: $pane.pathText
                 )
                 .environmentObject(sftp)
             } else {
@@ -2024,16 +2289,16 @@ private struct RemoteSFTPTabPane: View {
 
     private func refreshIfNeeded() {
         guard canConnect else { return }
-        if tab.pathText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            tab.pathText = "."
+        if pane.pathText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            pane.pathText = "."
         }
         guard sftp.activeProfileID == nil else { return }
-        sftp.refreshDirectory(profile: profile, path: tab.pathText)
+        sftp.refreshDirectory(profile: profile, path: pane.pathText)
     }
 }
 
 private struct LocalFileBrowserPane: View {
-    @Binding var tab: SFTPTabState
+    @Binding var pane: SFTPSideState
 
     let availableProfiles: [SSHProfile]
 
@@ -2047,18 +2312,18 @@ private struct LocalFileBrowserPane: View {
     }
 
     private var filteredEntries: [RemoteFileEntry] {
-        let trimmed = tab.filterText.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmed = pane.filterText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return entries }
         return entries.filter { $0.name.localizedCaseInsensitiveContains(trimmed) }
     }
 
     private var isRootPath: Bool {
-        let url = URL(fileURLWithPath: expandedLocalPath(tab.pathText)).standardizedFileURL
+        let url = URL(fileURLWithPath: expandedLocalPath(pane.pathText)).standardizedFileURL
         return url.path == url.deletingLastPathComponent().path
     }
 
     private var canMutateSelectedEntry: Bool {
-        guard let selectedEntry = tab.selectedEntry else { return false }
+        guard let selectedEntry = pane.selectedEntry else { return false }
         return selectedEntry.name != ".."
     }
 
@@ -2083,7 +2348,7 @@ private struct LocalFileBrowserPane: View {
 
                     HStack(spacing: 5) {
                         Image(systemName: "magnifyingglass")
-                        TextField("筛选", text: $tab.filterText)
+                        TextField("筛选", text: $pane.filterText)
                             .textFieldStyle(.plain)
                             .font(.caption)
                     }
@@ -2151,15 +2416,15 @@ private struct LocalFileBrowserPane: View {
                     .disabled(isRootPath)
 
                     HStack(spacing: 6) {
-                        TextField("本地路径，例如 ~/Downloads", text: $tab.pathText)
+                        TextField("本地路径，例如 ~/Downloads", text: $pane.pathText)
                             .textFieldStyle(.plain)
                             .font(.caption.weight(.medium))
                             .onSubmit {
-                                openPath(tab.pathText)
+                                openPath(pane.pathText)
                             }
 
                         Button {
-                            openPath(tab.pathText)
+                            openPath(pane.pathText)
                         } label: {
                             Image(systemName: "arrow.right.circle.fill")
                                 .font(.system(size: 15, weight: .semibold))
@@ -2186,10 +2451,10 @@ private struct LocalFileBrowserPane: View {
             ZStack(alignment: .top) {
                 RemoteFileTableView(
                     entries: displayedEntries,
-                    profileID: tab.id,
-                    selectedEntry: $tab.selectedEntry,
-                    sortColumn: $tab.sortColumn,
-                    sortAscending: $tab.sortAscending,
+                    profileID: pane.id,
+                    selectedEntry: $pane.selectedEntry,
+                    sortColumn: $pane.sortColumn,
+                    sortAscending: $pane.sortAscending,
                     currentPath: normalizedCurrentPath,
                     loadingPath: nil,
                     canNavigate: true,
@@ -2204,7 +2469,7 @@ private struct LocalFileBrowserPane: View {
                     EmptyStateView(
                         systemImage: "folder",
                         title: "还没有文件列表",
-                        subtitle: tab.filterText.isEmpty ? "当前目录为空，或没有读取权限" : "没有匹配的文件"
+                        subtitle: pane.filterText.isEmpty ? "当前目录为空，或没有读取权限" : "没有匹配的文件"
                     )
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
@@ -2230,23 +2495,23 @@ private struct LocalFileBrowserPane: View {
             handleDrop(providers)
         }
         .onAppear {
-            if tab.pathText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                tab.pathText = NSHomeDirectory()
+            if pane.pathText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                pane.pathText = NSHomeDirectory()
             }
-            loadDirectory(tab.pathText)
+            loadDirectory(pane.pathText)
         }
-        .onChange(of: tab.pathText) { newPath in
+        .onChange(of: pane.pathText) { newPath in
             loadDirectory(newPath)
         }
         .onChange(of: transferSFTP.status) { status in
             if status == .completed {
-                loadDirectory(tab.pathText)
+                loadDirectory(pane.pathText)
             }
         }
     }
 
     private var normalizedCurrentPath: String {
-        expandedLocalPath(tab.pathText)
+        expandedLocalPath(pane.pathText)
     }
 
     private var localStatusLabel: String {
@@ -2303,7 +2568,7 @@ private struct LocalFileBrowserPane: View {
     }
 
     private func refresh() {
-        loadDirectory(tab.pathText)
+        loadDirectory(pane.pathText)
     }
 
     private func sortedEntries(_ entries: [RemoteFileEntry]) -> [RemoteFileEntry] {
@@ -2315,7 +2580,7 @@ private struct LocalFileBrowserPane: View {
             }
 
             let result: ComparisonResult
-            switch tab.sortColumn {
+            switch pane.sortColumn {
             case .name:
                 result = lhs.name.localizedStandardCompare(rhs.name)
             case .modified:
@@ -2333,20 +2598,20 @@ private struct LocalFileBrowserPane: View {
             if result == .orderedSame {
                 return lhs.name.localizedStandardCompare(rhs.name) == .orderedAscending
             }
-            return tab.sortAscending ? result == .orderedAscending : result == .orderedDescending
+            return pane.sortAscending ? result == .orderedAscending : result == .orderedDescending
         }
         return parentEntries + sorted
     }
 
     private func open(_ entry: RemoteFileEntry) {
         if entry.isDirectory {
-            tab.selectedEntry = nil
-            tab.pathText = entry.path
+            pane.selectedEntry = nil
+            pane.pathText = entry.path
             loadDirectory(entry.path)
             return
         }
 
-        tab.selectedEntry = entry
+        pane.selectedEntry = entry
         NSWorkspace.shared.open(URL(fileURLWithPath: entry.path))
     }
 
@@ -2381,8 +2646,8 @@ private struct LocalFileBrowserPane: View {
             return
         }
         if isDirectory.boolValue {
-            tab.selectedEntry = nil
-            tab.pathText = expanded
+            pane.selectedEntry = nil
+            pane.pathText = expanded
             loadDirectory(expanded)
         } else {
             NSWorkspace.shared.open(URL(fileURLWithPath: expanded))
@@ -2390,11 +2655,11 @@ private struct LocalFileBrowserPane: View {
     }
 
     private func goParent() {
-        let url = URL(fileURLWithPath: expandedLocalPath(tab.pathText)).standardizedFileURL
+        let url = URL(fileURLWithPath: expandedLocalPath(pane.pathText)).standardizedFileURL
         let parentURL = url.deletingLastPathComponent()
         guard parentURL.path != url.path else { return }
-        tab.selectedEntry = nil
-        tab.pathText = parentURL.path
+        pane.selectedEntry = nil
+        pane.pathText = parentURL.path
         loadDirectory(parentURL.path)
     }
 
@@ -2438,7 +2703,7 @@ private struct LocalFileBrowserPane: View {
             }
 
             entries = nextEntries
-            tab.pathText = directoryURL.path
+            pane.pathText = directoryURL.path
             statusText = "本地文件"
         } catch {
             entries = []
@@ -2495,7 +2760,7 @@ private struct LocalFileBrowserPane: View {
                     return
                 }
 
-                let destination = URL(fileURLWithPath: expandedLocalPath(tab.pathText), isDirectory: true)
+                let destination = URL(fileURLWithPath: expandedLocalPath(pane.pathText), isDirectory: true)
                     .appendingPathComponent(payload.name.isEmpty ? "remote-file" : payload.name)
                     .path
                 transferSFTP.download(
@@ -2536,7 +2801,7 @@ private struct LocalFileBrowserPane: View {
         }
 
         group.notify(queue: .main) {
-            copyLocalPaths(collectedPaths.values(), to: expandedLocalPath(tab.pathText))
+            copyLocalPaths(collectedPaths.values(), to: expandedLocalPath(pane.pathText))
         }
 
         return true
@@ -2548,12 +2813,12 @@ private struct LocalFileBrowserPane: View {
         panel.canChooseDirectories = true
         panel.allowsMultipleSelection = true
         if panel.runModal() == .OK {
-            copyLocalPaths(panel.urls.map(\.path), to: expandedLocalPath(tab.pathText))
+            copyLocalPaths(panel.urls.map(\.path), to: expandedLocalPath(pane.pathText))
         }
     }
 
     private func copySelectedToFolder() {
-        guard let selectedEntry = tab.selectedEntry else { return }
+        guard let selectedEntry = pane.selectedEntry else { return }
         copyToFolder(selectedEntry)
     }
 
@@ -2570,7 +2835,7 @@ private struct LocalFileBrowserPane: View {
     }
 
     private func copySelectedToPath() {
-        guard let selectedEntry = tab.selectedEntry else { return }
+        guard let selectedEntry = pane.selectedEntry else { return }
         copyToTargetDirectory(selectedEntry)
     }
 
@@ -2578,7 +2843,7 @@ private struct LocalFileBrowserPane: View {
         guard let targetDirectory = promptText(
             title: "复制到目标目录",
             message: "输入本地目标目录路径。",
-            defaultValue: expandedLocalPath(tab.pathText)
+            defaultValue: expandedLocalPath(pane.pathText)
         ) else {
             return
         }
@@ -2605,7 +2870,7 @@ private struct LocalFileBrowserPane: View {
                 try fileManager.copyItem(at: sourceURL, to: destinationURL)
             }
             statusText = "复制完成"
-            loadDirectory(tab.pathText)
+            loadDirectory(pane.pathText)
         } catch {
             statusText = "复制失败"
             showAlert(title: "复制失败", message: error.localizedDescription)
@@ -2613,7 +2878,7 @@ private struct LocalFileBrowserPane: View {
     }
 
     private func renameSelected() {
-        guard let selectedEntry = tab.selectedEntry else { return }
+        guard let selectedEntry = pane.selectedEntry else { return }
         rename(selectedEntry)
     }
 
@@ -2625,9 +2890,9 @@ private struct LocalFileBrowserPane: View {
         let destinationURL = sourceURL.deletingLastPathComponent().appendingPathComponent(newName)
         do {
             try FileManager.default.moveItem(at: sourceURL, to: destinationURL)
-            tab.selectedEntry = nil
+            pane.selectedEntry = nil
             statusText = "重命名完成"
-            loadDirectory(tab.pathText)
+            loadDirectory(pane.pathText)
         } catch {
             statusText = "重命名失败"
             showAlert(title: "重命名失败", message: error.localizedDescription)
@@ -2635,7 +2900,7 @@ private struct LocalFileBrowserPane: View {
     }
 
     private func deleteSelected() {
-        guard let selectedEntry = tab.selectedEntry else { return }
+        guard let selectedEntry = pane.selectedEntry else { return }
         delete(selectedEntry)
     }
 
@@ -2647,9 +2912,9 @@ private struct LocalFileBrowserPane: View {
 
         do {
             try FileManager.default.removeItem(atPath: entry.path)
-            tab.selectedEntry = nil
+            pane.selectedEntry = nil
             statusText = "删除完成"
-            loadDirectory(tab.pathText)
+            loadDirectory(pane.pathText)
         } catch {
             statusText = "删除失败"
             showAlert(title: "删除失败", message: error.localizedDescription)
@@ -2663,11 +2928,11 @@ private struct LocalFileBrowserPane: View {
             return
         }
 
-        let targetURL = URL(fileURLWithPath: expandedLocalPath(tab.pathText), isDirectory: true).appendingPathComponent(folderName)
+        let targetURL = URL(fileURLWithPath: expandedLocalPath(pane.pathText), isDirectory: true).appendingPathComponent(folderName)
         do {
             try FileManager.default.createDirectory(at: targetURL, withIntermediateDirectories: false)
             statusText = "新建完成"
-            loadDirectory(tab.pathText)
+            loadDirectory(pane.pathText)
         } catch {
             statusText = "新建失败"
             showAlert(title: "新建文件夹失败", message: error.localizedDescription)
@@ -2675,7 +2940,7 @@ private struct LocalFileBrowserPane: View {
     }
 
     private func editSelectedPermissions() {
-        guard let selectedEntry = tab.selectedEntry else { return }
+        guard let selectedEntry = pane.selectedEntry else { return }
         editPermissions(selectedEntry)
     }
 
@@ -2689,7 +2954,7 @@ private struct LocalFileBrowserPane: View {
         do {
             try FileManager.default.setAttributes([.posixPermissions: NSNumber(value: value)], ofItemAtPath: entry.path)
             statusText = "权限已更新"
-            loadDirectory(tab.pathText)
+            loadDirectory(pane.pathText)
         } catch {
             statusText = "权限修改失败"
             showAlert(title: "权限修改失败", message: error.localizedDescription)

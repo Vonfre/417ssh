@@ -344,6 +344,15 @@ class ProfileStore:
         self.save()
         return profile
 
+    def add_custom_sftp(self) -> SSHProfile:
+        kind = "sftp"
+        count = len([profile for profile in self.profiles if profile.workspaceKind == kind])
+        profile = SSHProfile.blank(count + 1, kind)
+        profile.name = self.next_name("自定义 SFTP")
+        self.profiles.append(profile)
+        self.save()
+        return profile
+
     def duplicate_selected(self) -> SSHProfile | None:
         profile = self.selected()
         if profile is None:

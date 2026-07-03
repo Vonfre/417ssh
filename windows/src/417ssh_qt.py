@@ -77,7 +77,7 @@ def app_version() -> str:
         text = version_file.read_text(encoding="utf-8").strip()
         if text:
             return text
-    return "0.3.8"
+    return "0.3.9"
 
 
 CURRENT_VERSION = app_version()
@@ -1173,6 +1173,22 @@ class SFTPTabState(SFTPPaneState):
         return self.source_kind == "local"
 
 
+class SFTPPairTabState:
+    def __init__(self, title: str, left: SFTPTabState | None = None, right: SFTPTabState | None = None) -> None:
+        self.token = str(time.time_ns())
+        self.title = title
+        self.left = left or SFTPTabState.local()
+        self.right = right or SFTPTabState.empty()
+
+    @classmethod
+    def first(cls) -> "SFTPPairTabState":
+        return cls("SFTP 1")
+
+    @classmethod
+    def empty(cls, number: int) -> "SFTPPairTabState":
+        return cls(f"SFTP {number}")
+
+
 class LocalSFTPPaneWidget(QFrame):
     done = Signal(list, str)
     error = Signal(str)
@@ -2065,7 +2081,7 @@ class MainWindow(QMainWindow):
         self.sftp_connection_guard = threading.RLock()
         self.file_sidebar_visible = False
         self.directory_cache: dict[tuple[str, str], tuple[list[RemoteFileEntry], str]] = {}
-        self.sftp_workspace_tabs_by_profile: dict[str, list[SFTPTabState]] = {}
+        self.sftp_workspace_tabs_by_profile: dict[str, list[SFTPPairTabState]] = {}
         self.sftp_workspace_selected_tab_by_profile: dict[str, int] = {}
 
         self.setWindowTitle(APP_NAME)
@@ -2419,7 +2435,7 @@ class MainWindow(QMainWindow):
         header_layout.addWidget(name)
         header_layout.addWidget(StatusPill(f"{len(states)} 个标签", "#245fc7"))
 
-        detail = QLabel("默认本地，可在标签内选择终端工作区或自定义 SFTP")
+        detail = QLabel("每个标签包含 A/B 两栏，可左右拖拽传输")
         detail.setStyleSheet("color: #6b7280; font-size: 12px;")
         header_layout.addWidget(detail, 1)
 
@@ -2438,7 +2454,7 @@ class MainWindow(QMainWindow):
         tabs.tabCloseRequested.connect(lambda index, selected_profile=profile: self.close_sftp_tab(selected_profile, index))
         tabs.currentChanged.connect(lambda index, selected_profile=profile: self.remember_sftp_tab_index(selected_profile, index))
         for state in states:
-            tabs.addTab(self.sftp_tab_widget(profile, state), state.title)
+            tabs.addTab(self.sftp_pair_tab_widget(profile, state), self.sftp_pair_tab_title(state))
 
         selected_index = self.sftp_workspace_selected_tab_by_profile.get(profile.id, 0)
         if states:
@@ -2456,30 +2472,77 @@ class MainWindow(QMainWindow):
     def sftp_source_profiles(self) -> list[SSHProfile]:
         return [profile for profile in self.store.profiles if profile.workspaceKind in {"terminal", "sftp"}]
 
-    def ensure_sftp_workspace_tabs(self, profile: SSHProfile) -> list[SFTPTabState]:
+    def ensure_sftp_workspace_tabs(self, profile: SSHProfile) -> list[SFTPPairTabState]:
         states = self.sftp_workspace_tabs_by_profile.get(profile.id)
         if not states:
-            states = [SFTPTabState.local()]
+            states = [SFTPPairTabState.first()]
         source_ids = {item.id for item in self.sftp_source_profiles()}
-        for state in states:
-            if state.source_kind == "remote" and state.profile_id not in source_ids:
-                state.source_kind = None
-                state.profile_id = None
-                state.title = "选择主机"
-                state.entries = []
-                state.current_path = str(Path.home())
-                state.status = "选择主机"
+        normalized: list[SFTPPairTabState] = []
+        for index, state in enumerate(states):
+            if isinstance(state, SFTPPairTabState):
+                pair = state
+            else:
+                pair = SFTPPairTabState(f"SFTP {index + 1}", left=state, right=SFTPTabState.empty())
+            self.normalize_sftp_side(pair.left, source_ids)
+            self.normalize_sftp_side(pair.right, source_ids)
+            normalized.append(pair)
+        states = normalized
         self.sftp_workspace_tabs_by_profile[profile.id] = states
         return states
 
-    def sftp_tab_widget(self, workspace_profile: SSHProfile, state: SFTPTabState) -> QWidget:
+    def normalize_sftp_side(self, state: SFTPTabState, source_ids: set[str]) -> None:
+        if state.source_kind == "remote" and state.profile_id not in source_ids:
+            state.source_kind = None
+            state.profile_id = None
+            state.title = "选择主机"
+            state.entries = []
+            state.current_path = str(Path.home())
+            state.status = "选择主机"
+
+    def sftp_pair_tab_widget(self, workspace_profile: SSHProfile, pair: SFTPPairTabState) -> QWidget:
+        splitter = QSplitter(Qt.Horizontal)
+        splitter.setChildrenCollapsible(False)
+        splitter.addWidget(self.sftp_side_container(workspace_profile, pair.left, "A"))
+        splitter.addWidget(self.sftp_side_container(workspace_profile, pair.right, "B"))
+        splitter.setStretchFactor(0, 1)
+        splitter.setStretchFactor(1, 1)
+        return splitter
+
+    def sftp_side_container(self, workspace_profile: SSHProfile, state: SFTPTabState, side_label: str) -> QWidget:
+        container = QWidget()
+        layout = QVBoxLayout(container)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+
+        header = QFrame()
+        header.setStyleSheet("background: #eef4f6; border-bottom: 1px solid #d4dcda;")
+        header_layout = QHBoxLayout(header)
+        header_layout.setContentsMargins(8, 6, 8, 6)
+        badge = QLabel(side_label)
+        badge.setAlignment(Qt.AlignCenter)
+        badge.setFixedSize(24, 22)
+        badge.setStyleSheet("background: #245fc7; color: white; border-radius: 5px; font-weight: 800;")
+        header_layout.addWidget(badge)
+        title = QLabel(state.title)
+        title.setStyleSheet("font-size: 12px; font-weight: 700; color: #26312d;")
+        header_layout.addWidget(title, 1)
+        if state.source_kind is not None:
+            switch_button = QToolButton()
+            switch_button.setText("切换 Host")
+            switch_button.clicked.connect(lambda _checked=False, selected_state=state: self.clear_sftp_side_source(workspace_profile, selected_state))
+            header_layout.addWidget(switch_button)
+        layout.addWidget(header)
+        layout.addWidget(self.sftp_side_widget(workspace_profile, state, side_label), 1)
+        return container
+
+    def sftp_side_widget(self, workspace_profile: SSHProfile, state: SFTPTabState, side_label: str) -> QWidget:
         if state.source_kind == "local":
             return LocalSFTPPaneWidget(self, state)
         if state.source_kind == "remote":
             return SFTPPaneWidget(self, state, state.title, show_profile_combo=False)
-        return self.sftp_host_picker_widget(workspace_profile, state)
+        return self.sftp_host_picker_widget(workspace_profile, state, side_label)
 
-    def sftp_host_picker_widget(self, workspace_profile: SSHProfile, state: SFTPTabState) -> QWidget:
+    def sftp_host_picker_widget(self, workspace_profile: SSHProfile, state: SFTPTabState, side_label: str) -> QWidget:
         widget = QScrollArea()
         widget.setWidgetResizable(True)
         widget.setFrameShape(QFrame.NoFrame)
@@ -2488,9 +2551,14 @@ class MainWindow(QMainWindow):
         layout.setContentsMargins(24, 24, 24, 24)
         layout.setSpacing(14)
 
-        title = QLabel("Hosts")
+        header = QHBoxLayout()
+        title = QLabel(f"Hosts {side_label}")
         title.setStyleSheet("font-size: 20px; font-weight: 780; color: #111827;")
-        layout.addWidget(title)
+        header.addWidget(title, 1)
+        add_custom = QPushButton("新增自定义 SFTP")
+        add_custom.clicked.connect(lambda _checked=False, selected_state=state: self.add_custom_sftp_source(workspace_profile, selected_state))
+        header.addWidget(add_custom)
+        layout.addLayout(header)
 
         grid_holder = QWidget()
         grid = QGridLayout(grid_holder)
@@ -2503,17 +2571,22 @@ class MainWindow(QMainWindow):
             sources.append(("remote", source.id, source.name, subtitle))
 
         for index, (kind, profile_id, name, subtitle) in enumerate(sources):
-            card = QPushButton()
-            card.setCursor(Qt.PointingHandCursor)
+            card = QFrame()
             card.setMinimumHeight(86)
-            card.setStyleSheet(
+            card.setStyleSheet("QFrame { border-radius: 8px; border: 1px solid #d6dfdc; background: white; }")
+            card_layout = QHBoxLayout(card)
+            card_layout.setContentsMargins(10, 10, 10, 10)
+            select_button = QPushButton(f"{name}\n{subtitle}")
+            select_button.setCursor(Qt.PointingHandCursor)
+            select_button.setMinimumHeight(64)
+            select_button.setStyleSheet(
                 """
                 QPushButton {
                     text-align: left;
-                    padding: 14px 18px;
+                    padding: 10px 12px;
                     border-radius: 8px;
-                    border: 1px solid #d6dfdc;
-                    background: white;
+                    border: 0;
+                    background: transparent;
                     font-size: 15px;
                     font-weight: 700;
                 }
@@ -2523,8 +2596,7 @@ class MainWindow(QMainWindow):
                 }
                 """
             )
-            card.setText(f"{name}\n{subtitle}")
-            card.clicked.connect(
+            select_button.clicked.connect(
                 lambda _checked=False, selected_kind=kind, selected_profile_id=profile_id, selected_name=name: self.select_sftp_tab_source(
                     workspace_profile,
                     state,
@@ -2533,6 +2605,19 @@ class MainWindow(QMainWindow):
                     selected_name,
                 )
             )
+            card_layout.addWidget(select_button, 1)
+            source_profile = self.profile_by_id(profile_id or "")
+            if source_profile is not None and source_profile.workspaceKind == "sftp" and source_profile.id != workspace_profile.id:
+                actions = QVBoxLayout()
+                edit_button = QToolButton()
+                edit_button.setText("编辑")
+                edit_button.clicked.connect(lambda _checked=False, selected_profile=source_profile: self.edit_custom_sftp_source(workspace_profile, selected_profile))
+                actions.addWidget(edit_button)
+                delete_button = QToolButton()
+                delete_button.setText("删除")
+                delete_button.clicked.connect(lambda _checked=False, selected_profile=source_profile: self.delete_custom_sftp_source(workspace_profile, selected_profile))
+                actions.addWidget(delete_button)
+                card_layout.addLayout(actions)
             grid.addWidget(card, index // 2, index % 2)
 
         grid.setColumnStretch(0, 1)
@@ -2541,6 +2626,46 @@ class MainWindow(QMainWindow):
         layout.addStretch(1)
         widget.setWidget(holder)
         return widget
+
+    def clear_sftp_side_source(self, workspace_profile: SSHProfile, state: SFTPTabState) -> None:
+        state.source_kind = None
+        state.profile_id = None
+        state.title = "选择主机"
+        state.entries = []
+        state.filter_text = ""
+        state.pending_path = None
+        state.current_path = str(Path.home())
+        state.status = "选择主机"
+        self.render_selected_profile()
+
+    def add_custom_sftp_source(self, workspace_profile: SSHProfile, state: SFTPTabState) -> None:
+        source = self.store.add_custom_sftp()
+        self.select_sftp_tab_source(workspace_profile, state, "remote", source.id, source.name)
+        if self.edit_profile(source):
+            self.store.selected_profile_id = workspace_profile.id
+        else:
+            self.store.delete_by_id(source.id, workspace_profile.id)
+            self.clear_sftp_side_source(workspace_profile, state)
+            return
+        self.refresh_sidebar()
+        self.render_selected_profile()
+
+    def edit_custom_sftp_source(self, workspace_profile: SSHProfile, source: SSHProfile) -> None:
+        previous_id = self.store.selected_profile_id
+        self.store.selected_profile_id = source.id
+        if self.edit_profile(source):
+            self.store.selected_profile_id = workspace_profile.id
+            self.refresh_sidebar()
+            self.render_selected_profile()
+        else:
+            self.store.selected_profile_id = previous_id or workspace_profile.id
+
+    def delete_custom_sftp_source(self, workspace_profile: SSHProfile, source: SSHProfile) -> None:
+        if QMessageBox.question(self, APP_NAME, f"确定删除自定义 SFTP“{source.name}”吗？\n这个操作只删除 Host 配置，不会删除服务器文件。") != QMessageBox.Yes:
+            return
+        self.store.delete_by_id(source.id, workspace_profile.id)
+        self.refresh_sidebar()
+        self.render_selected_profile()
 
     def select_sftp_tab_source(
         self,
@@ -2562,7 +2687,7 @@ class MainWindow(QMainWindow):
 
     def add_sftp_tab(self, profile: SSHProfile) -> None:
         states = self.ensure_sftp_workspace_tabs(profile)
-        states.append(SFTPTabState.empty())
+        states.append(SFTPPairTabState.empty(len(states) + 1))
         self.sftp_workspace_selected_tab_by_profile[profile.id] = len(states) - 1
         self.render_selected_profile()
 
@@ -2578,6 +2703,9 @@ class MainWindow(QMainWindow):
     def remember_sftp_tab_index(self, profile: SSHProfile, index: int) -> None:
         if index >= 0:
             self.sftp_workspace_selected_tab_by_profile[profile.id] = index
+
+    def sftp_pair_tab_title(self, state: SFTPPairTabState) -> str:
+        return f"{state.title}  A:{state.left.title}  B:{state.right.title}"
 
     def render_terminal(self, profile: SSHProfile) -> None:
         status_text = {
