@@ -4,7 +4,7 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 APP_NAME="417ssh"
 BUNDLE_ID="com.zhanghuan.417ssh"
-VERSION="${VERSION:-$(cat "$ROOT_DIR/VERSION" 2>/dev/null || echo "0.2.13")}"
+VERSION="${VERSION:-$(cat "$ROOT_DIR/VERSION" 2>/dev/null || echo "0.3.0")}"
 BUILD_DIR="$ROOT_DIR/build"
 APP_DIR="$BUILD_DIR/$APP_NAME.app"
 EXECUTABLE="$APP_DIR/Contents/MacOS/RemoteJupyterTunnel"
@@ -105,6 +105,10 @@ PLIST
 
 if command -v codesign >/dev/null 2>&1; then
   codesign --force --deep --sign - "$APP_DIR" >/dev/null
+fi
+
+if command -v xattr >/dev/null 2>&1; then
+  xattr -cr "$APP_DIR" || true
 fi
 
 touch "$APP_DIR"

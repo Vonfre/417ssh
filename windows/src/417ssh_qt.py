@@ -72,7 +72,7 @@ def app_version() -> str:
         text = version_file.read_text(encoding="utf-8").strip()
         if text:
             return text
-    return "0.2.13"
+    return "0.3.0"
 
 
 CURRENT_VERSION = app_version()
@@ -382,7 +382,7 @@ def make_logo(size: int) -> QLabel:
     label.setText("417")
     label.setAlignment(Qt.AlignCenter)
     label.setStyleSheet(
-        "background: #e8f6ed; color: #237a4b; border: 1px solid rgba(0,0,0,0.08); border-radius: 8px;"
+        "background: #eef6ff; color: #2658b8; border: 1px solid rgba(38,88,184,0.16); border-radius: 8px;"
         "font-weight: 700;"
     )
     return label
@@ -390,12 +390,12 @@ def make_logo(size: int) -> QLabel:
 
 def status_color(status: str) -> str:
     if status in {"connected", "文件完成", "终端已连接", "已连接"}:
-        return "#1f9d55"
+        return "#158a4b"
     if status in {"connecting", "文件处理中", "正在上传", "正在下载", "终端连接中"}:
-        return "#c77800"
+        return "#b96200"
     if status in {"failed", "文件失败", "终端失败", "连接失败"}:
-        return "#c93535"
-    return "#6b7280"
+        return "#c23535"
+    return "#64706b"
 
 
 class StatusPill(QLabel):
@@ -468,11 +468,11 @@ class ProfileRow(QFrame):
     @staticmethod
     def row_style(selected: bool, active: bool) -> str:
         if selected:
-            background = "#e7f0ff"
-            border = "#b8cdf8"
+            background = "#eaf2ff"
+            border = "#a9c3f5"
         elif active:
-            background = "#e9f7ef"
-            border = "#b9e5ca"
+            background = "#e8f6ef"
+            border = "#acdcbc"
         else:
             background = "rgba(255,255,255,0.72)"
             border = "rgba(80,95,90,0.14)"
@@ -497,7 +497,7 @@ class ProfileEditor(QDialog):
         root.setSpacing(10)
 
         header = QFrame()
-        header.setStyleSheet("background: #f5f7f8; border-radius: 8px;")
+        header.setStyleSheet("background: #f5f8fa; border: 1px solid #dce4e1; border-radius: 8px;")
         header_layout = QHBoxLayout(header)
         header_layout.setContentsMargins(12, 10, 12, 10)
         header_layout.addWidget(make_logo(40))
@@ -889,16 +889,21 @@ class MainWindow(QMainWindow):
 
         self.setStyleSheet(
             """
-            QMainWindow { background: #f6f8f8; }
-            #Sidebar { background: #f3faf6; }
-            QPushButton { padding: 6px 10px; border-radius: 6px; border: 1px solid #c9d2cf; background: #ffffff; }
-            QPushButton:hover { background: #f3f7f6; }
-            QPushButton[primary="true"] { background: #167044; color: white; border-color: #167044; font-weight: 650; }
+            QMainWindow { background: #f6f8f9; }
+            #Sidebar { background: #f2f6f5; border-right: 1px solid #dbe3e0; }
+            QPushButton { padding: 6px 10px; border-radius: 6px; border: 1px solid #c5d0cc; background: #ffffff; }
+            QPushButton:hover { background: #eef4f2; }
+            QPushButton:disabled { color: #98a29e; background: #f4f6f6; }
+            QPushButton[primary="true"] { background: #245fc7; color: white; border-color: #245fc7; font-weight: 650; }
+            QPushButton[primary="true"]:hover { background: #1f55b5; }
             QToolButton { padding: 4px 7px; border-radius: 5px; }
             QToolButton:hover { background: rgba(0,0,0,0.06); }
-            QLineEdit, QSpinBox, QComboBox { padding: 6px; border: 1px solid #c9d2cf; border-radius: 6px; background: white; }
-            QPlainTextEdit, QTextEdit, QTreeWidget { border: 1px solid #d1d8d6; border-radius: 8px; background: white; }
-            QTabWidget::pane { border: 1px solid #d1d8d6; border-radius: 8px; background: white; }
+            QLineEdit, QSpinBox, QComboBox { padding: 6px; border: 1px solid #c5d0cc; border-radius: 6px; background: white; }
+            QLineEdit:focus, QSpinBox:focus, QComboBox:focus { border-color: #8dacdf; }
+            QPlainTextEdit, QTextEdit, QTreeWidget { border: 1px solid #d0d9d6; border-radius: 8px; background: white; selection-background-color: #dce8ff; }
+            QTabWidget::pane { border: 1px solid #d0d9d6; border-radius: 8px; background: white; }
+            QTabBar::tab { padding: 7px 12px; border: 1px solid transparent; border-top-left-radius: 6px; border-top-right-radius: 6px; }
+            QTabBar::tab:selected { background: white; border-color: #d0d9d6; color: #245fc7; font-weight: 650; }
             """
         )
 
@@ -967,7 +972,7 @@ class MainWindow(QMainWindow):
 
     def header(self, profile: SSHProfile, status_text: str, color: str) -> QWidget:
         frame = QFrame()
-        frame.setStyleSheet("background: rgba(255,255,255,0.86); border-bottom: 1px solid #d9dfdd;")
+        frame.setStyleSheet("background: rgba(255,255,255,0.92); border-bottom: 1px solid #d9dfdd;")
         layout = QHBoxLayout(frame)
         layout.setContentsMargins(12, 10, 12, 10)
         layout.setSpacing(10)
@@ -1008,9 +1013,24 @@ class MainWindow(QMainWindow):
         layout.setSpacing(10)
 
         controls = QHBoxLayout()
+        if self.tunnel_profile_id != profile.id:
+            workspace_status_text = f"{profile.workspace_title} 未连接"
+            workspace_status_color = "#64706b"
+        elif self.tunnel_status == "connecting":
+            workspace_status_text = f"{profile.workspace_title} 正在连接"
+            workspace_status_color = "#b96200"
+        elif self.tunnel_status == "connected":
+            workspace_status_text = f"{profile.workspace_title} 已连接"
+            workspace_status_color = "#158a4b"
+        elif self.tunnel_status == "failed":
+            workspace_status_text = f"{profile.workspace_title} 连接失败"
+            workspace_status_color = "#c23535"
+        else:
+            workspace_status_text = f"{profile.workspace_title} 未连接"
+            workspace_status_color = "#64706b"
         tabs_label = StatusPill(
-            f"{profile.workspace_title} 已连接" if self.is_profile_active(profile) else f"{profile.workspace_title} 未连接",
-            "#1f9d55" if self.is_profile_active(profile) else "#6b7280",
+            workspace_status_text,
+            workspace_status_color,
         )
         controls.addWidget(tabs_label)
         controls.addStretch(1)

@@ -43,6 +43,7 @@ final class TunnelManager: ObservableObject {
     private var expectScriptURL: URL?
     private var activeLocalPort: Int?
     private var sshProcessID: pid_t?
+    private var localPortProbeTask: Task<Void, Never>?
 
     func connect(profile: SSHProfile, password: String) {
         disconnect()
@@ -104,6 +105,7 @@ final class TunnelManager: ObservableObject {
             activeLocalPort = profile.localPort
             status = .connecting
             try process.run()
+            startLocalPortProbe(profileID: profile.id, port: profile.localPort)
         } catch {
             cleanupProcess()
             status = .failed(error.localizedDescription)
@@ -141,6 +143,12 @@ final class TunnelManager: ObservableObject {
 
     func clearLog() {
         logText = ""
+    }
+
+    func markConnectedFromBrowser(profileID: UUID) {
+        guard status == .connecting, activeProfileID == profileID else { return }
+        status = .connected
+        appendLog("网页已加载，连接状态已确认。")
     }
 
     func closePortConflictAndReconnect(profile: SSHProfile) {
@@ -200,6 +208,36 @@ final class TunnelManager: ObservableObject {
         if didStartExpectedLocalForward(in: logText.lowercased()) {
             status = .connected
         }
+    }
+
+    private func startLocalPortProbe(profileID: UUID, port: Int) {
+        localPortProbeTask?.cancel()
+        localPortProbeTask = Task { [weak self] in
+            for _ in 0..<80 {
+                guard !Task.isCancelled else { return }
+                try? await Task.sleep(nanoseconds: 250_000_000)
+
+                guard let self else { return }
+                if self.isActiveConnectingProfile(profileID) && self.isLocalPortReachable(port) {
+                    self.markConnectedFromPortProbe(profileID: profileID, port: port)
+                    return
+                }
+            }
+        }
+    }
+
+    private func isActiveConnectingProfile(_ profileID: UUID) -> Bool {
+        status == .connecting && activeProfileID == profileID
+    }
+
+    private func isLocalPortReachable(_ port: Int) -> Bool {
+        isLocalPortInUse(port)
+    }
+
+    private func markConnectedFromPortProbe(profileID: UUID, port: Int) {
+        guard status == .connecting, activeProfileID == profileID else { return }
+        status = .connected
+        appendLog("本地端口 \(port) 已开始监听，连接状态已确认。")
     }
 
     private func didStartExpectedLocalForward(in lowercasedChunk: String) -> Bool {
@@ -335,6 +373,8 @@ final class TunnelManager: ObservableObject {
     }
 
     private func cleanupProcess() {
+        localPortProbeTask?.cancel()
+        localPortProbeTask = nil
         outputPipe?.fileHandleForReading.readabilityHandler = nil
         outputPipe = nil
         process = nil

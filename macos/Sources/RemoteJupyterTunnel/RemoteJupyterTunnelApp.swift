@@ -8,6 +8,7 @@ struct RemoteJupyterTunnelApp: App {
     @StateObject private var updateManager = UpdateManager()
 
     init() {
+        AppLaunchSanitizer.clearOwnQuarantineIfPossible()
         AppIconInstaller.install()
     }
 

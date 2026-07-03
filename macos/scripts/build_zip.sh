@@ -3,7 +3,7 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 APP_NAME="417ssh"
-VERSION="${VERSION:-$(cat "$ROOT_DIR/VERSION" 2>/dev/null || echo "0.2.13")}"
+VERSION="${VERSION:-$(cat "$ROOT_DIR/VERSION" 2>/dev/null || echo "0.3.0")}"
 BUILD_DIR="$ROOT_DIR/build"
 APP_DIR="$BUILD_DIR/$APP_NAME.app"
 ZIP_PATH="$BUILD_DIR/$APP_NAME-$VERSION-mac-app.zip"
@@ -16,6 +16,9 @@ rm -rf "$STAGING_DIR" "$ZIP_PATH"
 mkdir -p "$STAGING_DIR"
 
 cp -R "$APP_DIR" "$STAGING_DIR/$APP_NAME.app"
+if command -v xattr >/dev/null 2>&1; then
+  xattr -cr "$STAGING_DIR/$APP_NAME.app" || true
+fi
 cat > "$README_PATH" <<'README'
 417ssh macOS 首次打开说明
 
@@ -34,6 +37,8 @@ cat > "$README_PATH" <<'README'
 3. 在安全提示区域选择“仍要打开”。
 
 出现这个提示的原因是当前版本还没有使用 Apple Developer ID 做签名和公证。应用本身由 GitHub Actions 从源码自动构建，发布包旁边的 SHA256SUMS.txt 可用于校验下载文件完整性。
+
+应用内自动更新会在替换新版 417ssh.app 时清理 macOS 下载隔离标记，并自动重新打开应用。
 README
 
 if command -v ditto >/dev/null 2>&1; then

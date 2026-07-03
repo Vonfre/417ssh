@@ -97,9 +97,15 @@ struct ContentView: View {
 
                 Spacer(minLength: 0)
             }
-            .padding(.horizontal, 14)
-            .padding(.top, 14)
-            .padding(.bottom, 10)
+            .padding(10)
+            .background(AppTheme.sidebarHeaderBackground(colorScheme), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .stroke(Color(nsColor: .separatorColor).opacity(0.26), lineWidth: 1)
+            }
+            .padding(.horizontal, 10)
+            .padding(.top, 10)
+            .padding(.bottom, 8)
 
             ScrollView {
                 LazyVStack(spacing: 14) {
@@ -205,11 +211,7 @@ struct ContentView: View {
     }
 
     private var sidebarBackground: Color {
-        if colorScheme == .dark {
-            return Color(nsColor: .windowBackgroundColor)
-        }
-
-        return Color(red: 0.965, green: 0.982, blue: 0.972)
+        AppTheme.sidebarBackground(colorScheme)
     }
 
     private var sidebarFooterBackground: Color {
@@ -254,6 +256,41 @@ struct ContentView: View {
             return tunnel.activeProfileID == profile.id && tunnel.status.isRunning
         case .terminal:
             return terminal.activeProfileID == profile.id && terminal.status.isRunning
+        }
+    }
+}
+
+enum AppTheme {
+    static let blue = Color(red: 0.18, green: 0.36, blue: 0.78)
+    static let teal = Color(red: 0.02, green: 0.54, blue: 0.48)
+    static let amber = Color(red: 0.82, green: 0.45, blue: 0.06)
+
+    static func sidebarBackground(_ scheme: ColorScheme) -> Color {
+        scheme == .dark
+            ? Color(nsColor: .windowBackgroundColor)
+            : Color(red: 0.958, green: 0.972, blue: 0.968)
+    }
+
+    static func sidebarHeaderBackground(_ scheme: ColorScheme) -> Color {
+        scheme == .dark
+            ? Color(nsColor: .textBackgroundColor).opacity(0.54)
+            : Color.white.opacity(0.74)
+    }
+
+    static func panelBackground(_ scheme: ColorScheme) -> Color {
+        scheme == .dark
+            ? Color(nsColor: .textBackgroundColor).opacity(0.70)
+            : Color.white.opacity(0.92)
+    }
+
+    static func workspaceColor(_ kind: WorkspaceKind) -> Color {
+        switch kind {
+        case .jupyter:
+            return blue
+        case .rstudio:
+            return teal
+        case .terminal:
+            return amber
         }
     }
 }
@@ -392,15 +429,7 @@ private struct ProfileRow: View {
 
     var body: some View {
         HStack(spacing: 10) {
-            ZStack {
-                RoundedRectangle(cornerRadius: 7, style: .continuous)
-                    .fill(isActive ? Color.green.opacity(0.16) : Color.secondary.opacity(0.10))
-
-                Image(systemName: isActive ? "point.3.connected.trianglepath.dotted" : profile.workspaceKind.systemImage)
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(isActive ? .green : .secondary)
-            }
-            .frame(width: 28, height: 28)
+            WorkspaceIconTile(kind: profile.workspaceKind, isActive: isActive, size: 28)
 
             VStack(alignment: .leading, spacing: 3) {
                 HStack(spacing: 6) {
@@ -438,7 +467,34 @@ private struct ProfileRow: View {
     }
 }
 
+private struct WorkspaceIconTile: View {
+    let kind: WorkspaceKind
+    let isActive: Bool
+    let size: CGFloat
+
+    var body: some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: min(8, size * 0.25), style: .continuous)
+                .fill(color.opacity(isActive ? 0.18 : 0.10))
+
+            Image(systemName: isActive ? "point.3.connected.trianglepath.dotted" : kind.systemImage)
+                .font(.system(size: max(12, size * 0.42), weight: .semibold))
+                .foregroundStyle(isActive ? color : .secondary)
+        }
+        .frame(width: size, height: size)
+        .overlay {
+            RoundedRectangle(cornerRadius: min(8, size * 0.25), style: .continuous)
+                .stroke(color.opacity(isActive ? 0.24 : 0.12), lineWidth: 1)
+        }
+    }
+
+    private var color: Color {
+        isActive ? .green : AppTheme.workspaceColor(kind)
+    }
+}
+
 private struct WebWorkspaceView: View {
+    @Environment(\.colorScheme) private var colorScheme
     @EnvironmentObject private var tunnel: TunnelManager
 
     let profileBox: BindingBox<SSHProfile>
@@ -494,7 +550,7 @@ private struct WebWorkspaceView: View {
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 10)
-        .background(Color(nsColor: .textBackgroundColor).opacity(0.86))
+        .background(.regularMaterial)
         .overlay(alignment: .bottom) {
             Divider()
                 .opacity(0.58)
@@ -503,7 +559,7 @@ private struct WebWorkspaceView: View {
 
     private var headerTitle: some View {
         HStack(spacing: 10) {
-            AppLogo(size: 34)
+            WorkspaceIconTile(kind: currentProfile.workspaceKind, isActive: isCurrentProfileActive, size: 34)
 
             VStack(alignment: .leading, spacing: 3) {
                 HStack(spacing: 8) {
@@ -601,8 +657,8 @@ private struct WebWorkspaceView: View {
                 Spacer(minLength: 0)
 
                 StatusDot(
-                    text: isCurrentProfileActive ? "\(currentProfile.workspaceKind.title) 已连接" : "\(currentProfile.workspaceKind.title) 未连接",
-                    color: isCurrentProfileActive ? .green : .secondary
+                    text: workspaceStatusText,
+                    color: workspaceStatusColor
                 )
             }
             .padding(.horizontal, 12)
@@ -622,7 +678,7 @@ private struct WebWorkspaceView: View {
                 }
             }
         }
-        .background(Color(nsColor: .textBackgroundColor), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .background(AppTheme.panelBackground(colorScheme), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
         .overlay {
             RoundedRectangle(cornerRadius: 8, style: .continuous)
                 .stroke(Color(nsColor: .separatorColor).opacity(0.48), lineWidth: 1)
@@ -632,9 +688,47 @@ private struct WebWorkspaceView: View {
         .animation(.easeInOut(duration: 0.14), value: selectedTab)
     }
 
+    private var workspaceStatusText: String {
+        guard tunnel.activeProfileID == currentProfile.id else {
+            return "\(currentProfile.workspaceKind.title) 未连接"
+        }
+
+        switch tunnel.status {
+        case .disconnected:
+            return "\(currentProfile.workspaceKind.title) 未连接"
+        case .connecting:
+            return "\(currentProfile.workspaceKind.title) 正在连接"
+        case .connected:
+            return "\(currentProfile.workspaceKind.title) 已连接"
+        case .failed:
+            return "\(currentProfile.workspaceKind.title) 连接失败"
+        }
+    }
+
+    private var workspaceStatusColor: Color {
+        guard tunnel.activeProfileID == currentProfile.id else { return .secondary }
+
+        switch tunnel.status {
+        case .disconnected:
+            return .secondary
+        case .connecting:
+            return AppTheme.amber
+        case .connected:
+            return .green
+        case .failed:
+            return .red
+        }
+    }
+
     private var browserPane: some View {
         ZStack {
-            WebWorkspaceBrowserView(url: currentProfile.localURL, reloadToken: reloadToken)
+            WebWorkspaceBrowserView(
+                url: currentProfile.localURL,
+                reloadToken: reloadToken,
+                onLoadComplete: {
+                    tunnel.markConnectedFromBrowser(profileID: currentProfile.id)
+                }
+            )
 
             if !isCurrentProfileActive {
                 EmptyStateView(
@@ -714,7 +808,11 @@ private struct ProfileEditorView: View {
                     .keyboardShortcut(.defaultAction)
             }
             .padding(14)
-            .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .stroke(Color(nsColor: .separatorColor).opacity(0.32), lineWidth: 1)
+            }
             .padding(12)
 
             ScrollView {
@@ -1495,9 +1593,20 @@ private struct SettingsSection<Content: View>: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Label(title, systemImage: systemImage)
-                .font(.headline)
-                .foregroundStyle(.primary)
+            HStack(spacing: 8) {
+                ZStack {
+                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                        .fill(AppTheme.blue.opacity(0.10))
+                    Image(systemName: systemImage)
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(AppTheme.blue)
+                }
+                .frame(width: 26, height: 26)
+
+                Text(title)
+                    .font(.headline)
+                    .foregroundStyle(.primary)
+            }
 
             VStack(alignment: .leading, spacing: 10) {
                 content
@@ -1542,12 +1651,18 @@ private struct EmptyStateView: View {
 
     var body: some View {
         VStack(spacing: 12) {
-            AppLogo(size: 72)
-                .opacity(0.88)
-
-            Image(systemName: systemImage)
-                .font(.system(size: 30, weight: .semibold))
-                .foregroundStyle(.secondary)
+            ZStack {
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .fill(Color.secondary.opacity(0.10))
+                Image(systemName: systemImage)
+                    .font(.system(size: 28, weight: .semibold))
+                    .foregroundStyle(.secondary)
+            }
+            .frame(width: 64, height: 64)
+            .overlay {
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .stroke(Color(nsColor: .separatorColor).opacity(0.28), lineWidth: 1)
+            }
 
             VStack(spacing: 4) {
                 Text(title)
@@ -1569,9 +1684,15 @@ private struct StatusPill: View {
 
     var body: some View {
         HStack(spacing: 6) {
-            Circle()
-                .fill(color)
-                .frame(width: 8, height: 8)
+            if case .connecting = status {
+                ProgressView()
+                    .controlSize(.mini)
+                    .frame(width: 10, height: 10)
+            } else {
+                Circle()
+                    .fill(color)
+                    .frame(width: 8, height: 8)
+            }
 
             Text(status.label)
                 .font(.caption.weight(.semibold))

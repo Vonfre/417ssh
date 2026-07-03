@@ -227,6 +227,11 @@ final class UpdateManager: ObservableObject {
           echo "target=$TARGET_APP"
         } >> "$LOG_FILE" 2>&1
 
+        if [ -x /usr/bin/xattr ]; then
+          echo "Clearing quarantine from staged app" >> "$LOG_FILE" 2>&1
+          /usr/bin/xattr -dr com.apple.quarantine "$NEW_APP" >> "$LOG_FILE" 2>&1 || true
+        fi
+
         /bin/sleep 0.5
         if /bin/kill -0 "$APP_PID" 2>/dev/null; then
           echo "Requesting app quit" >> "$LOG_FILE" 2>&1
@@ -247,7 +252,7 @@ final class UpdateManager: ObservableObject {
 
         if ! /bin/mkdir -p "$TARGET_PARENT"; then
           echo "Failed to create target parent: $TARGET_PARENT" >> "$LOG_FILE" 2>&1
-          /usr/bin/open "$TARGET_APP" || true
+          /usr/bin/open -n "$TARGET_APP" >> "$LOG_FILE" 2>&1 || true
           exit 1
         fi
 
@@ -255,16 +260,20 @@ final class UpdateManager: ObservableObject {
         if [ -d "$TARGET_APP" ]; then
           if ! /bin/mv "$TARGET_APP" "$BACKUP_APP"; then
             echo "Failed to move current app to backup" >> "$LOG_FILE" 2>&1
-            /usr/bin/open "$TARGET_APP" || true
+            /usr/bin/open -n "$TARGET_APP" >> "$LOG_FILE" 2>&1 || true
             exit 1
           fi
         fi
 
         if /usr/bin/ditto "$NEW_APP" "$TARGET_APP"; then
           echo "Install succeeded" >> "$LOG_FILE" 2>&1
+          if [ -x /usr/bin/xattr ]; then
+            echo "Clearing quarantine from installed app" >> "$LOG_FILE" 2>&1
+            /usr/bin/xattr -dr com.apple.quarantine "$TARGET_APP" >> "$LOG_FILE" 2>&1 || true
+          fi
           /bin/rm -rf "$BACKUP_APP"
           /bin/rm -rf "$STAGING_DIR"
-          /usr/bin/open "$TARGET_APP"
+          /usr/bin/open -n "$TARGET_APP" >> "$LOG_FILE" 2>&1 || true
           /bin/rm -f "$0"
           exit 0
         fi
@@ -273,7 +282,7 @@ final class UpdateManager: ObservableObject {
         if [ -d "$BACKUP_APP" ] && [ ! -d "$TARGET_APP" ]; then
           /bin/mv "$BACKUP_APP" "$TARGET_APP"
         fi
-        /usr/bin/open "$TARGET_APP" || true
+        /usr/bin/open -n "$TARGET_APP" >> "$LOG_FILE" 2>&1 || true
         exit 1
         """
 

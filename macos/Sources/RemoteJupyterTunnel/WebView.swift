@@ -4,6 +4,7 @@ import WebKit
 struct WebWorkspaceBrowserView: NSViewRepresentable {
     let url: URL?
     let reloadToken: Int
+    let onLoadComplete: () -> Void
 
     func makeNSView(context: Context) -> WKWebView {
         let configuration = WKWebViewConfiguration()
@@ -16,6 +17,8 @@ struct WebWorkspaceBrowserView: NSViewRepresentable {
     }
 
     func updateNSView(_ webView: WKWebView, context: Context) {
+        context.coordinator.onLoadComplete = onLoadComplete
+
         guard let url else { return }
 
         let shouldReload = context.coordinator.lastURL != url
@@ -29,11 +32,20 @@ struct WebWorkspaceBrowserView: NSViewRepresentable {
     }
 
     func makeCoordinator() -> Coordinator {
-        Coordinator()
+        Coordinator(onLoadComplete: onLoadComplete)
     }
 
     final class Coordinator: NSObject, WKNavigationDelegate {
         var lastURL: URL?
         var lastReloadToken = 0
+        var onLoadComplete: () -> Void
+
+        init(onLoadComplete: @escaping () -> Void) {
+            self.onLoadComplete = onLoadComplete
+        }
+
+        func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+            onLoadComplete()
+        }
     }
 }

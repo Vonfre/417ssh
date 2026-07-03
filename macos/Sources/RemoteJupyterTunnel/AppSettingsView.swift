@@ -1,6 +1,7 @@
 import SwiftUI
 
 struct AppSettingsView: View {
+    @Environment(\.colorScheme) private var colorScheme
     @Environment(\.dismiss) private var dismiss
     @EnvironmentObject private var updateManager: UpdateManager
 
@@ -22,8 +23,12 @@ struct AppSettingsView: View {
                     dismiss()
                 }
             }
-
-            Divider()
+            .padding(14)
+            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .stroke(Color(nsColor: .separatorColor).opacity(0.30), lineWidth: 1)
+            }
 
             VStack(alignment: .leading, spacing: 12) {
                 Toggle("启动时自动检查 GitHub 更新", isOn: $updateManager.autoCheckEnabled)
@@ -35,7 +40,11 @@ struct AppSettingsView: View {
                 }
                 .padding(12)
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .background(Color(nsColor: .textBackgroundColor), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                .background(AppTheme.panelBackground(colorScheme), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .stroke(Color(nsColor: .separatorColor).opacity(0.32), lineWidth: 1)
+                }
 
                 HStack(spacing: 10) {
                     SettingsStatusDot(text: updateManager.status.label, color: statusColor)
@@ -64,7 +73,11 @@ struct AppSettingsView: View {
                     }
                     .padding(12)
                     .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(Color(nsColor: .textBackgroundColor), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                    .background(AppTheme.panelBackground(colorScheme), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 8, style: .continuous)
+                            .stroke(Color(nsColor: .separatorColor).opacity(0.32), lineWidth: 1)
+                    }
                 }
 
                 HStack(spacing: 10) {
@@ -86,6 +99,7 @@ struct AppSettingsView: View {
                         updateManager.openReleasesPage()
                     }
                 }
+                .controlSize(.regular)
             }
 
             Text("检查更新会读取 GitHub Releases，并显示当前版本、最新版本和对应的 macOS 更新包。安装新版会自动下载、解压、替换当前 417ssh.app，然后重启应用。")
@@ -96,6 +110,7 @@ struct AppSettingsView: View {
             Spacer()
         }
         .padding(20)
+        .background(AppTheme.sidebarBackground(colorScheme))
         .frame(width: 580, height: 480)
     }
 
