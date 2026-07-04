@@ -1,6 +1,8 @@
-# 417ssh Windows
+# 417ssh Windows Legacy
 
-这是 `417ssh` 的 Windows 版本，界面结构和功能尽量贴近 macOS 版：
+这是 `417ssh` 0.6.0 之前的 Windows Python/PySide6 版本，保留作回退和参考。0.6.0 开始的正式 Windows 发布包来自仓库里的 `windows-native/` 原生 WPF/.NET 8 工程。
+
+旧版功能包括：
 
 - 保存多组 Jupyter / RStudio / 终端 / SFTP 工作区配置。
 - 配置窗口内置快捷填写区，可以直接粘贴 `ssh ...` 命令并自动填入目标主机、跳板机、端口转发、压缩、详细日志和密钥路径。

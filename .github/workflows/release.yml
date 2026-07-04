@@ -92,7 +92,7 @@ jobs:
           if-no-files-found: error
 
   windows-portable-zip:
-    name: Build Windows portable ZIP
+    name: Build Windows native portable ZIP
     runs-on: windows-latest
     timeout-minutes: 60
     steps:
@@ -115,26 +115,23 @@ jobs:
             throw "Release tag must look like v<version>, got: $tag"
           }
           Set-Content -Path windows\VERSION -Value $version -Encoding UTF8
+          Set-Content -Path windows-native\VERSION -Value $version -Encoding UTF8
           "tag=$tag" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
           "version=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v4
         with:
-          python-version: "3.11"
-          cache: "pip"
-          cache-dependency-path: |
-            windows/requirements.txt
-            windows/requirements-build.txt
+          dotnet-version: "8.0.x"
 
-      - name: Build portable ZIP
+      - name: Build native portable ZIP
         shell: pwsh
         run: |
-          cd windows
+          cd windows-native
           $env:VERSION = "${{ steps.version.outputs.version }}"
           .\build_portable.ps1
           if (-not (Test-Path "dist\417ssh-${{ steps.version.outputs.version }}-win-portable.zip")) {
-            throw "Windows portable ZIP was not created"
+            throw "Windows native portable ZIP was not created"
           }
           Get-Item "dist\417ssh-${{ steps.version.outputs.version }}-win-portable.zip" | Format-List FullName,Length
 
@@ -142,7 +139,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: windows-portable-zip
-          path: windows/dist/417ssh-${{ steps.version.outputs.version }}-win-portable.zip
+          path: windows-native/dist/417ssh-${{ steps.version.outputs.version }}-win-portable.zip
           if-no-files-found: error
 
   github-release:
@@ -202,50 +199,14 @@ jobs:
           417ssh $VERSION portable packages.
 
           Highlights:
-          - 0.5.2 makes Windows updates diagnosable: the settings page now shows the fixed update download directory, installer log path, and the last installer result after restart.
-          - Windows update packages are now stored under the user's LocalAppData update folder instead of an opaque temp folder, and the app closes its own window before the background installer replaces files.
-          - 0.5.1 fixes terminal-to-SFTP directory sync by actively probing the remote shell \`$PWD\` before refreshing SFTP, so paths such as \`/data/project/0_data\` and \`/data/project/2.docker\` are not truncated.
-          - Windows terminal directory parsing was split into a small dependency-free helper with regression coverage for underscores, dots, spaces, parentheses, Chinese paths, OSC 7, and the internal PWD probe.
-          - Windows configuration and SFTP workspace UI were tightened: clearer primary actions, plain numeric port fields without spin arrows, and a visible SFTP tab add button.
-          - Windows startup is lighter because the Qt app skips the legacy Tk UI path and lazy-loads Qt WebEngine only when embedded pages or the real terminal are used.
-          - Windows portable packaging now uses an onedir app folder, so 417ssh.exe is no longer a giant single-file executable and startup/update replacement is more reliable.
-          - Windows settings now show update download progress, and the background updater extracts the downloaded portable zip after the app exits before replacing the current folder.
-          - Windows UI styling is tightened toward the macOS app with a softer sidebar, denser profile rows, smoother buttons, and more compact SFTP host cards.
-          - Legacy Windows builds before this updater may need one manual zip replacement because the old batch updater could kill its own cmd process while showing `find "<PID>"`.
-          - Windows download-and-install updates now run through a hidden background PowerShell updater instead of opening a visible cmd/Windows Terminal window.
-          - Windows updater writes an install log, backs up the current portable folder, and attempts rollback plus app restart if replacement fails.
-          - Windows built-in terminal now uses a bundled xterm.js terminal emulator connected to the Paramiko SSH PTY, instead of rendering terminal output in a simulated text box.
-          - Windows terminal now lets xterm.js handle ANSI, cursor movement, alternate screen, full-screen terminal apps, selection, paste, and resize behavior.
-          - Windows now keeps Jupyter/RStudio tunnels and terminal sessions per workspace, matching the macOS behavior when switching between workspaces.
-          - Windows built-in terminal accepts keyboard input directly in the terminal pane through the SSH PTY, with Ctrl-C, paste, arrow keys, and PTY resize support.
-          - Windows terminal still tracks OSC 7 and typed \`cd ...\` commands for SFTP directory sync while passing the raw terminal stream to xterm.js.
-          - Windows portable startup now bundles the dynamically loaded core module dependencies, including uuid, tkinter, and Paramiko.
-          - Terminal SFTP path-to-terminal now inserts \`cd <path>\`, so pressing Enter in the terminal enters that directory directly.
-          - Sync-to-terminal-folder and auto-sync no longer inject a visible \`printf ...\` probe into the shell.
-          - Auto-sync follows terminal \`cd ...\` commands and OSC 7 current-directory reports, then refreshes the SFTP side panel.
-          - Workspace switching now keeps web tunnels, terminal sessions, and SFTP browser state alive instead of tearing down connections when you leave the page.
-          - Terminal workspaces add three SFTP side-panel actions: copy the current SFTP path into the terminal, sync the SFTP pane to the terminal folder, and auto-sync with terminal folder changes.
-          - Terminal SFTP side panels keep per-profile path, listing, filter, cached directory, and connection state so another workspace does not overwrite the active file browser.
-          - The built-in SFTP workspace is named SFTP, and Hosts start with local host only; terminal workspaces appear there automatically, while extra SFTP sources are created through Add custom SFTP.
-          - SFTP Host cards are more compact and easier to click across the whole card area.
-          - Pure SFTP still has a single sidebar workspace entry, but each top tab now contains a left/right A/B pair for direct transfers.
-          - The A side opens local host \`127.0.0.1\` by default; A and B can each choose local files, terminal workspaces, or custom SFTP profiles from Hosts.
-          - A/B panes keep independent source, path, selection, filter, sorting, and cached directory state while switching tabs.
-          - Custom SFTP Hosts are managed explicitly inside the Hosts area with Add, Edit, and Delete buttons instead of right-click deletion.
-          - Existing extra SFTP profiles are hidden from the sidebar but remain available as custom SFTP Hosts sources.
-          - Local-to-remote drag uploads, remote-to-local drag downloads, and remote-to-remote drag transfer are supported between the A/B panes.
-          - SFTP pane toolbars and file rows remain compact, leaving more room for the actual file list.
-          - Profile editor imports existing \`ssh ...\` commands inline, without a separate popup, and fills host, jump host, forwarding, flags, and identity file fields.
-          - Sidebar actions are simplified to Add, Delete, and Settings; Add opens a workspace-type menu.
-          - New profiles can be canceled directly; canceling removes the temporary blank profile instead of leaving it behind.
-          - Blank SFTP workspaces no longer auto-select another saved server; empty profiles stay local until configured.
-          - Drag and drop now supports local uploads and remote item transfer between SFTP panes, including the terminal SFTP side panel.
-          - SFTP file browser supports right-click actions: open, download, copy, rename, delete, refresh, new folder, and permission editing.
-          - The terminal file browser is now a collapsible side panel instead of being shown all the time.
-          - Directory navigation updates the path immediately, uses cached listings when available, and refreshes in the background.
-          - File tables support header sorting by name, modified time, size, and type.
-          - macOS SFTP uses SSH connection multiplexing for faster repeated directory/file operations.
-          - Windows SFTP reuses Paramiko SSH connections per profile for faster browsing and multi-server panes.
+          - Windows has been rebuilt as a native WPF/.NET 8 app instead of the old Python/PySide6/QtWebEngine package.
+          - Windows keeps the same profile file at \`%APPDATA%\\417ssh\\profiles.json\`, so existing saved workspaces continue to load locally.
+          - Windows terminal is now an embedded xterm.js terminal connected to an SSH.NET PTY ShellStream.
+          - Windows Jupyter/RStudio workspaces use WebView2 and SSH.NET local port forwarding.
+          - Windows SFTP uses SSH.NET SftpClient with persistent per-host sessions, local host support, A/B dual-pane tabs, drag-and-drop transfer, sorting, and Chinese right-click actions.
+          - Terminal workspaces include the SFTP side panel actions for \`cd <path>\`, sync to terminal folder, and auto-sync from terminal directory changes.
+          - The native Windows settings page can check GitHub Releases, show download progress, download the portable zip to LocalAppData, and install it after the app exits without opening a visible command prompt.
+          - The legacy Python Windows implementation remains in the repository for reference, but the 0.6.0 Windows download is produced from \`windows-native\`.
 
           Downloads:
           - macOS: \`417ssh-$VERSION-mac-app.zip\`

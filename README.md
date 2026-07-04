@@ -32,7 +32,7 @@ macOS 版本使用系统自带的 `/usr/bin/ssh` 建立隧道和终端连接。
 2. 解压后进入 `417ssh` 文件夹。
 3. 双击 `417ssh.exe` 运行，不要把 exe 单独移出文件夹。
 
-Windows portable 版本不需要安装 Python。配置文件保存在：
+Windows portable 版本从 0.6.0 开始改为原生 WPF/.NET 实现，不需要安装 Python。配置文件保存在：
 
 ```text
 %APPDATA%\417ssh\profiles.json
@@ -56,7 +56,7 @@ Windows portable 版本不需要安装 Python。配置文件保存在：
 - 终端当前目录同步会保留点号、下划线、空格、括号和中文等路径字符，避免 `/data/project/0_data` 或 `/data/project/2.docker` 被误识别成 `/data/project/0`、`/data/project/2`。
 - Windows 版 SFTP 文件列表使用文件/文件夹图标，终端侧栏的路径同步按钮也与 macOS 版一样改为图标按钮。
 - Windows 版配置窗口和 SFTP 工作区做了更接近 macOS 的视觉修整：主操作按钮更清晰，端口字段使用普通数字输入框，SFTP 多标签新增按钮更醒目。
-- Windows 版启动时不再加载旧 Tk 界面和 Qt WebEngine；内置网页和真实终端会在需要时按需加载，降低启动卡顿和不必要依赖。若后续要进一步接近 macOS 的轻量体积，Windows 端需要改走原生 .NET/WinUI + 系统 OpenSSH/WinSCP 这类非 Python 打包路线。
+- Windows 版从 0.6.0 开始改为原生 WPF/.NET 8 + WebView2 + SSH.NET，不再使用 Python/PySide6/QtWebEngine 作为发布包路线，启动和交互会明显更轻。
 - 从 GitHub Releases 检查更新，并可直接下载、后台安装、重启到新版；Windows 更新界面会显示下载进度、下载目录和安装日志，后台 updater 会在主程序退出后自解压 zip、替换当前 portable 文件夹并重启，不会弹出命令行窗口。
 
 ## 版本与发布
@@ -83,13 +83,15 @@ SHA256SUMS.txt
 ## 项目结构
 
 ```text
-macos/      原生 Swift/macOS 版本
-windows/    Windows 版本，Python + PySide6/Qt + Paramiko
+macos/          原生 Swift/macOS 版本
+windows-native/ Windows 原生 WPF/.NET 8 版本
+windows/        旧 Windows Python/PySide6 版本，保留作回退参考
 ```
 
 开发者本地运行和构建说明见：
 
 - [macos/README.md](macos/README.md)
+- [windows-native/README.md](windows-native/README.md)
 - [windows/README.md](windows/README.md)
 
 ## 注意事项
