@@ -644,6 +644,8 @@ public sealed class TerminalWorkspaceView : DockPanel
             _status.Text = "终端未连接";
         }));
         actions.Children.Add(MainWindow.SecondaryButton("清屏", "\uE894", (_, _) => _terminal.Clear()));
+        actions.Children.Add(MainWindow.IconButton("\uE7E8", "中断 Ctrl+C", 32, (_, _) => _session.SendControlC()));
+        actions.Children.Add(MainWindow.SecondaryButton("原生终端", "\uE756", (_, _) => OpenNativeTerminal()));
         actions.Children.Add(MainWindow.IconButton("\uE8C8", "将 SFTP 目录路径复制到终端", 32, (_, _) =>
         {
             _terminal.SendText("cd " + ShellEscaper.Quote(_sftpBrowser.CurrentPath));
@@ -696,6 +698,18 @@ public sealed class TerminalWorkspaceView : DockPanel
         if (!string.IsNullOrWhiteSpace(path))
         {
             _sftpBrowser.Navigate(path);
+        }
+    }
+
+    private void OpenNativeTerminal()
+    {
+        try
+        {
+            NativeTerminalLauncher.Open(_profile);
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(ex.Message, "原生终端", MessageBoxButton.OK, MessageBoxImage.Error);
         }
     }
 
@@ -1670,7 +1684,7 @@ public sealed class ProfileEditorWindow : Window
     {
         _profile.name = GetText("name");
         _profile.localPort = IntValue("localPort", _profile.localPort);
-        _profile.remoteHost = GetText("remoteHost");
+        _profile.remoteHost = HostNames.NormalizeForwardTarget(GetText("remoteHost"));
         _profile.remotePort = IntValue("remotePort", _profile.remotePort);
         _profile.jupyterPath = GetText("jupyterPath");
         _profile.targetUser = GetText("targetUser");

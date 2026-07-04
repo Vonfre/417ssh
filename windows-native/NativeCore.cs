@@ -92,8 +92,57 @@ public static class AppVersion
                 }
             }
 
-            return "0.6.1";
+            return "0.6.2";
         }
+    }
+}
+
+public static class HostNames
+{
+    public static string NormalizeForwardTarget(string host)
+    {
+        var value = string.IsNullOrWhiteSpace(host) ? "127.0.0.1" : host.Trim();
+        return IsUnspecifiedAddress(value) ? "127.0.0.1" : value;
+    }
+
+    public static void EnsureConnectTarget(string host, string label)
+    {
+        var value = string.IsNullOrWhiteSpace(host) ? "" : host.Trim();
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            throw new InvalidOperationException($"{label}为空");
+        }
+
+        if (IsUnspecifiedAddress(value))
+        {
+            throw new InvalidOperationException(
+                $"{label}不能是 {value}。0.0.0.0 / :: 只表示监听所有地址，不能作为 SSH 连接目标；请填写真实主机名或 IP。");
+        }
+    }
+
+    public static bool IsUnspecifiedAddress(string host)
+    {
+        var value = StripIpv6Brackets(host.Trim());
+        if (value is "*" or ":0")
+        {
+            return true;
+        }
+
+        if (!IPAddress.TryParse(value, out var address))
+        {
+            return false;
+        }
+
+        return address.Equals(IPAddress.Any) || address.Equals(IPAddress.IPv6Any);
+    }
+
+    private static string StripIpv6Brackets(string value)
+    {
+        if (value.Length >= 2 && value[0] == '[' && value[^1] == ']')
+        {
+            return value[1..^1];
+        }
+        return value;
     }
 }
 
@@ -255,11 +304,11 @@ public sealed class SshProfile : IEquatable<SshProfile>
         id = string.IsNullOrWhiteSpace(id) ? Guid.NewGuid().ToString() : id;
         workspaceKind = WorkspaceKinds.All.Contains(workspaceKind) ? workspaceKind : WorkspaceKinds.Jupyter;
         name = string.IsNullOrWhiteSpace(name) ? WorkspaceKinds.DefaultName(workspaceKind, 1) : name.Trim();
-        remoteHost ??= WorkspaceKinds.DefaultRemoteHost(workspaceKind);
+        remoteHost = HostNames.NormalizeForwardTarget(remoteHost ?? WorkspaceKinds.DefaultRemoteHost(workspaceKind));
         jumpUser ??= "";
-        jumpHost ??= "";
+        jumpHost = jumpHost?.Trim() ?? "";
         targetUser ??= "";
-        targetHost ??= "";
+        targetHost = targetHost?.Trim() ?? "";
         jupyterPath = string.IsNullOrWhiteSpace(jupyterPath) ? WorkspaceKinds.DefaultHttpPath(workspaceKind) : jupyterPath.Trim();
         sshPassword ??= "";
         identityFile ??= "";
@@ -530,7 +579,7 @@ public static class SshCommandParser
                 if (forward.Length == 3)
                 {
                     if (int.TryParse(forward[0], out var localPort)) profile.localPort = localPort;
-                    profile.remoteHost = forward[1];
+                    profile.remoteHost = HostNames.NormalizeForwardTarget(forward[1]);
                     if (int.TryParse(forward[2], out var remotePort)) profile.remotePort = remotePort;
                 }
                 break;
@@ -692,23 +741,21 @@ public static class SshConnectionFactory
     public static SshConnectionContext CreateContext(SshProfile profile)
     {
         profile.Normalize();
-        if (string.IsNullOrWhiteSpace(profile.targetHost))
-        {
-            throw new InvalidOperationException("目标主机为空");
-        }
+        HostNames.EnsureConnectTarget(profile.targetHost, "目标主机");
 
         if (!profile.HasJumpHost)
         {
             return new SshConnectionContext(BuildConnectionInfo(profile.targetHost, profile.targetPort, profile.TargetUserOrDefault, profile));
         }
 
+        HostNames.EnsureConnectTarget(profile.jumpHost, "跳板主机");
         var jumpUser = string.IsNullOrWhiteSpace(profile.jumpUser) ? profile.TargetUserOrDefault : profile.jumpUser.Trim();
         var jumpInfo = BuildConnectionInfo(profile.jumpHost, profile.jumpPort, jumpUser, profile);
         var jumpClient = new SshClient(jumpInfo);
         jumpClient.Connect();
 
         var localPort = GetFreeTcpPort();
-        var forward = new ForwardedPortLocal("127.0.0.1", (uint)localPort, profile.targetHost, (uint)profile.targetPort);
+        var forward = new ForwardedPortLocal("127.0.0.1", (uint)localPort, profile.targetHost.Trim(), (uint)profile.targetPort);
         jumpClient.AddForwardedPort(forward);
         forward.Start();
 
@@ -734,6 +781,7 @@ public static class SshConnectionFactory
 
     private static ConnectionInfo BuildConnectionInfo(string host, int port, string user, SshProfile profile)
     {
+        HostNames.EnsureConnectTarget(host, "连接主机");
         var methods = new List<AuthenticationMethod>();
         var identityFile = Environment.ExpandEnvironmentVariables(profile.identityFile.Trim());
         if (identityFile.StartsWith("~", StringComparison.Ordinal))
@@ -779,6 +827,141 @@ public static class SshConnectionFactory
     }
 }
 
+public static class OpenSshArguments
+{
+    public static IReadOnlyList<string> Terminal(SshProfile profile, bool includeBatchMode)
+    {
+        profile.Normalize();
+        HostNames.EnsureConnectTarget(profile.targetHost, "目标主机");
+
+        var args = new List<string>();
+        if (profile.compressionEnabled)
+        {
+            args.Add("-C");
+        }
+
+        if (!profile.useSSHConfig)
+        {
+            args.Add("-F");
+            args.Add("none");
+        }
+
+        args.Add("-tt");
+
+        if (includeBatchMode)
+        {
+            args.Add("-o");
+            args.Add("BatchMode=yes");
+        }
+
+        if (profile.keepAliveEnabled)
+        {
+            args.Add("-o");
+            args.Add($"ServerAliveInterval={Math.Clamp(profile.keepAliveInterval, 10, 600)}");
+            args.Add("-o");
+            args.Add($"ServerAliveCountMax={Math.Clamp(profile.keepAliveCountMax, 3, 720)}");
+            args.Add("-o");
+            args.Add("TCPKeepAlive=yes");
+        }
+
+        if (!string.IsNullOrWhiteSpace(profile.identityFile))
+        {
+            args.Add("-i");
+            args.Add(ExpandUserPath(profile.identityFile));
+        }
+
+        if (profile.targetPort != 22)
+        {
+            args.Add("-p");
+            args.Add(profile.targetPort.ToString(CultureInfo.InvariantCulture));
+        }
+
+        if (profile.HasJumpHost)
+        {
+            HostNames.EnsureConnectTarget(profile.jumpHost, "跳板主机");
+            args.Add("-J");
+            args.Add(profile.JumpAddress);
+        }
+
+        args.Add(profile.TargetAddress);
+        return args;
+    }
+
+    private static string ExpandUserPath(string path)
+    {
+        var value = Environment.ExpandEnvironmentVariables(path.Trim());
+        if (value.StartsWith("~", StringComparison.Ordinal))
+        {
+            return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), value[1..].TrimStart('\\', '/'));
+        }
+        return value;
+    }
+}
+
+public static class NativeTerminalLauncher
+{
+    public static void Open(SshProfile profile)
+    {
+        var sshArgs = OpenSshArguments.Terminal(profile, includeBatchMode: false);
+        if (TryStartWindowsTerminal(profile, sshArgs))
+        {
+            return;
+        }
+
+        StartCmd(sshArgs);
+    }
+
+    private static bool TryStartWindowsTerminal(SshProfile profile, IReadOnlyList<string> sshArgs)
+    {
+        try
+        {
+            var start = new ProcessStartInfo
+            {
+                FileName = "wt.exe",
+                UseShellExecute = false,
+                CreateNoWindow = false
+            };
+            start.ArgumentList.Add("new-tab");
+            start.ArgumentList.Add("--title");
+            start.ArgumentList.Add(string.IsNullOrWhiteSpace(profile.name) ? "417ssh" : profile.name);
+            start.ArgumentList.Add("ssh");
+            foreach (var arg in sshArgs)
+            {
+                start.ArgumentList.Add(arg);
+            }
+            Process.Start(start);
+            return true;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private static void StartCmd(IReadOnlyList<string> sshArgs)
+    {
+        var start = new ProcessStartInfo
+        {
+            FileName = "cmd.exe",
+            UseShellExecute = false,
+            CreateNoWindow = false
+        };
+        start.ArgumentList.Add("/k");
+        start.ArgumentList.Add("ssh " + string.Join(" ", sshArgs.Select(QuoteForCmd)));
+        Process.Start(start);
+    }
+
+    private static string QuoteForCmd(string value)
+    {
+        if (Regex.IsMatch(value, @"^[A-Za-z0-9_@%+=:,./\\~-]+$"))
+        {
+            return value;
+        }
+
+        return "\"" + value.Replace("\"", "\\\"", StringComparison.Ordinal) + "\"";
+    }
+}
+
 public sealed class TunnelSession : IDisposable
 {
     private SshConnectionContext? _context;
@@ -792,7 +975,8 @@ public sealed class TunnelSession : IDisposable
         Disconnect();
         _client = SshConnectionFactory.CreateConnectedSshClient(profile, out _context);
         var boundHost = profile.allowRemoteLocalPortAccess ? "0.0.0.0" : "127.0.0.1";
-        _forward = new ForwardedPortLocal(boundHost, (uint)profile.localPort, profile.remoteHost, (uint)profile.remotePort);
+        var remoteHost = HostNames.NormalizeForwardTarget(profile.remoteHost);
+        _forward = new ForwardedPortLocal(boundHost, (uint)profile.localPort, remoteHost, (uint)profile.remotePort);
         _client.AddForwardedPort(_forward);
         _forward.Start();
     }
@@ -894,6 +1078,8 @@ public sealed class TerminalSession : IDisposable
         _stream.Flush();
         TrackInput(text);
     }
+
+    public void SendControlC() => Send("\u0003");
 
     public void Resize(int columns, int rows)
     {
