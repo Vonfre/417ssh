@@ -1084,7 +1084,7 @@ public sealed class SftpSession : IDisposable
         var normalized = PosixPath.Normalize(string.IsNullOrWhiteSpace(path) ? "." : path);
         return _client.ListDirectory(normalized)
             .Where(file => file.Name is not "." and not "..")
-            .Select(SftpEntry.FromRemote)
+            .Select(file => SftpEntry.FromRemote(file))
             .OrderByDescending(entry => entry.IsDirectory)
             .ThenBy(entry => entry.Name, StringComparer.CurrentCultureIgnoreCase)
             .ToList();

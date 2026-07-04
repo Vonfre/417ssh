@@ -543,6 +543,11 @@ public sealed class TerminalWorkspaceView : DockPanel
         LastChildFill = true;
         Margin = new Thickness(18);
         _session = GetOrCreateSession();
+        _sftpBrowser = new SftpBrowserControl(
+            () => [new SftpSource("terminal", profile.id, profile.name, false, profile)],
+            sftpSessions,
+            fixedSourceId: profile.id,
+            paneTitle: "文件");
         _stateHandler = state => Dispatcher.Invoke(() => _status.Text = "终端" + state);
         _directoryHandler = path =>
         {
@@ -559,11 +564,6 @@ public sealed class TerminalWorkspaceView : DockPanel
             _session.DirectoryChanged -= _directoryHandler;
         };
         _terminal = new TerminalControl(_session);
-        _sftpBrowser = new SftpBrowserControl(
-            () => [new SftpSource("terminal", profile.id, profile.name, false, profile)],
-            sftpSessions,
-            fixedSourceId: profile.id,
-            paneTitle: "文件");
 
         var toolbar = new Border
         {
