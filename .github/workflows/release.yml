@@ -202,6 +202,8 @@ jobs:
           417ssh $VERSION portable packages.
 
           Highlights:
+          - Windows configuration and SFTP workspace UI were tightened: clearer primary actions, plain numeric port fields without spin arrows, and a visible SFTP tab add button.
+          - Windows startup is lighter because the Qt app skips the legacy Tk UI path and lazy-loads Qt WebEngine only when embedded pages or the real terminal are used.
           - Windows portable packaging now uses an onedir app folder, so 417ssh.exe is no longer a giant single-file executable and startup/update replacement is more reliable.
           - Windows settings now show update download progress, and the background updater extracts the downloaded portable zip after the app exits before replacing the current folder.
           - Windows UI styling is tightened toward the macOS app with a softer sidebar, denser profile rows, smoother buttons, and more compact SFTP host cards.

@@ -16,8 +16,39 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Callable
 
-import tkinter as tk
-from tkinter import filedialog, messagebox, ttk
+QT_ONLY = os.environ.get("SSH417_QT_ONLY") == "1"
+
+if QT_ONLY:
+    class _TkBase:
+        pass
+
+    class _TkStub:
+        Toplevel = _TkBase
+        Tk = _TkBase
+        Variable = object
+        BOTH = "both"
+        X = "x"
+        LEFT = "left"
+        RIGHT = "right"
+        W = "w"
+        END = "end"
+        WORD = "word"
+        NORMAL = "normal"
+        DISABLED = "disabled"
+        VERTICAL = "vertical"
+        HORIZONTAL = "horizontal"
+        BOTTOM = "bottom"
+
+        def __getattr__(self, _name: str):
+            return _TkBase
+
+    tk = _TkStub()
+    filedialog = _TkStub()
+    messagebox = _TkStub()
+    ttk = _TkStub()
+else:
+    import tkinter as tk
+    from tkinter import filedialog, messagebox, ttk
 
 try:
     import paramiko
@@ -25,6 +56,8 @@ except ImportError:  # pragma: no cover - handled in the UI at runtime
     paramiko = None
 
 try:
+    if QT_ONLY:
+        raise ImportError
     from PIL import Image, ImageTk
 except ImportError:  # pragma: no cover - logo is optional
     Image = None

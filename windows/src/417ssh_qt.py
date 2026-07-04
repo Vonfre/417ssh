@@ -23,7 +23,7 @@ from pathlib import Path
 from typing import Callable
 
 from PySide6.QtCore import QByteArray, QMimeData, QObject, QSize, Qt, QTimer, QUrl, Signal, Slot
-from PySide6.QtGui import QColor, QDragEnterEvent, QDropEvent, QFont, QIcon, QPixmap, QTextCursor
+from PySide6.QtGui import QColor, QDragEnterEvent, QDropEvent, QFont, QIcon, QIntValidator, QPixmap, QTextCursor
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
@@ -44,7 +44,6 @@ from PySide6.QtWidgets import (
     QProgressBar,
     QPushButton,
     QScrollArea,
-    QSpinBox,
     QSplitter,
     QTabWidget,
     QTextEdit,
@@ -56,15 +55,9 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-try:
-    from PySide6.QtWebEngineWidgets import QWebEngineView
-except Exception:  # pragma: no cover - optional runtime fallback
-    QWebEngineView = None
-
-try:
-    from PySide6.QtWebChannel import QWebChannel
-except Exception:  # pragma: no cover - optional runtime fallback
-    QWebChannel = None
+QWebEngineView = None
+QWebChannel = None
+WEB_ENGINE_IMPORT_ATTEMPTED = False
 
 
 APP_NAME = "417ssh"
@@ -79,6 +72,7 @@ def bundled_root() -> Path:
 APP_DIR = bundled_root()
 ASSETS_DIR = APP_DIR / "assets"
 CORE_PATH = APP_DIR / "417ssh_windows.py" if getattr(sys, "frozen", False) else Path(__file__).with_name("417ssh_windows.py")
+os.environ.setdefault("SSH417_QT_ONLY", "1")
 
 
 def app_version() -> str:
@@ -87,7 +81,7 @@ def app_version() -> str:
         text = version_file.read_text(encoding="utf-8").strip()
         if text:
             return text
-    return "0.4.8"
+    return "0.5.0"
 
 
 CURRENT_VERSION = app_version()
@@ -116,6 +110,31 @@ connect_ssh = core.connect_ssh
 bytes_label = core.bytes_label
 SETTINGS_FILE = core.CONFIG_DIR / "settings.json"
 REMOTE_FILE_MIME = "application/x-417ssh-remote-file"
+INTEGER_FIELD_NAMES = {
+    "localPort",
+    "remotePort",
+    "jumpPort",
+    "targetPort",
+    "keepAliveInterval",
+    "keepAliveCountMax",
+}
+
+
+def ensure_web_engine() -> bool:
+    global QWebChannel, QWebEngineView, WEB_ENGINE_IMPORT_ATTEMPTED
+    if WEB_ENGINE_IMPORT_ATTEMPTED:
+        return QWebEngineView is not None and QWebChannel is not None
+    WEB_ENGINE_IMPORT_ATTEMPTED = True
+    try:
+        from PySide6.QtWebChannel import QWebChannel as ImportedWebChannel
+        from PySide6.QtWebEngineWidgets import QWebEngineView as ImportedWebEngineView
+    except Exception:
+        QWebChannel = None
+        QWebEngineView = None
+        return False
+    QWebChannel = ImportedWebChannel
+    QWebEngineView = ImportedWebEngineView
+    return True
 
 
 def load_app_settings() -> dict:
@@ -956,6 +975,32 @@ class ProfileEditor(QDialog):
         self.setWindowTitle("修改配置")
         self.resize(640, 720)
         self.setMinimumSize(560, 620)
+        self.setStyleSheet(
+            """
+            QDialog { background: #f7f9f8; }
+            QLabel { color: #1f2925; }
+            QLineEdit, QComboBox, QTextEdit {
+                min-height: 28px;
+                padding: 6px 8px;
+                border: 1px solid #c8d2ce;
+                border-radius: 7px;
+                background: #ffffff;
+                color: #1f2925;
+            }
+            QLineEdit:focus, QComboBox:focus, QTextEdit:focus { border-color: #98b1e5; }
+            QPushButton {
+                min-height: 30px;
+                padding: 5px 12px;
+                border-radius: 7px;
+                border: 1px solid #c8d2ce;
+                background: #ffffff;
+                color: #1f2925;
+                font-weight: 600;
+            }
+            QPushButton:hover { background: #f3f7f6; border-color: #b9c7c2; }
+            QCheckBox { color: #1f2925; spacing: 8px; }
+            """
+        )
         self.build()
 
     def build(self) -> None:
@@ -978,9 +1023,17 @@ class ProfileEditor(QDialog):
         header_layout.addLayout(title_box, 1)
         cancel = QPushButton("取消")
         cancel.clicked.connect(self.reject)
+        cancel.setMinimumWidth(72)
         header_layout.addWidget(cancel)
         done = QPushButton("完成")
         done.setProperty("primary", True)
+        done.setMinimumWidth(72)
+        done.setStyleSheet(
+            "QPushButton { min-height: 30px; padding: 5px 14px; border-radius: 7px; border: 1px solid #2e5cc7;"
+            "background: #2e5cc7; color: #ffffff; font-weight: 700; }"
+            "QPushButton:hover { background: #254fb0; border-color: #254fb0; }"
+            "QPushButton:pressed { background: #1f469f; border-color: #1f469f; }"
+        )
         done.clicked.connect(self.save)
         header_layout.addWidget(done)
         root.addWidget(header)
@@ -1066,9 +1119,10 @@ class ProfileEditor(QDialog):
 
     def add_spin(self, name: str, label: str, low: int, high: int) -> QWidget:
         row, layout = self.row(label)
-        field = QSpinBox()
-        field.setRange(low, high)
-        field.setValue(int(getattr(self.profile, name)))
+        field = QLineEdit(str(getattr(self.profile, name)))
+        field.setValidator(QIntValidator(low, high, field))
+        field.setProperty("minimumValue", low)
+        field.setProperty("maximumValue", high)
         field.setMaximumWidth(150)
         layout.addWidget(field)
         layout.addStretch(1)
@@ -1116,14 +1170,29 @@ class ProfileEditor(QDialog):
         values = self.profile.to_dict()
         for name, widget in self.fields.items():
             if isinstance(widget, QLineEdit):
-                values[name] = widget.text()
-            elif isinstance(widget, QSpinBox):
-                values[name] = widget.value()
+                if name in INTEGER_FIELD_NAMES:
+                    values[name] = self.integer_field_value(widget, int(values.get(name) or 0))
+                else:
+                    values[name] = widget.text()
             elif isinstance(widget, QCheckBox):
                 values[name] = widget.isChecked()
             elif isinstance(widget, QComboBox):
                 values[name] = widget.currentData()
         return SSHProfile.from_dict(values)
+
+    def integer_field_value(self, widget: QLineEdit, fallback: int) -> int:
+        text = widget.text().strip()
+        try:
+            value = int(text)
+        except ValueError:
+            return fallback
+        low = widget.property("minimumValue")
+        high = widget.property("maximumValue")
+        if isinstance(low, int):
+            value = max(low, value)
+        if isinstance(high, int):
+            value = min(high, value)
+        return value
 
     def apply_profile_to_fields(self, profile: SSHProfile) -> None:
         self.profile = profile
@@ -1131,8 +1200,6 @@ class ProfileEditor(QDialog):
             value = getattr(profile, name)
             if isinstance(widget, QLineEdit):
                 widget.setText(str(value))
-            elif isinstance(widget, QSpinBox):
-                widget.setValue(int(value))
             elif isinstance(widget, QCheckBox):
                 widget.setChecked(bool(value))
             elif isinstance(widget, QComboBox):
@@ -1146,8 +1213,6 @@ class ProfileEditor(QDialog):
         for widget in self.fields.values():
             if isinstance(widget, QLineEdit):
                 widget.textChanged.connect(self.update_preview_from_fields)
-            elif isinstance(widget, QSpinBox):
-                widget.valueChanged.connect(self.update_preview_from_fields)
             elif isinstance(widget, QCheckBox):
                 widget.toggled.connect(self.update_preview_from_fields)
             elif isinstance(widget, QComboBox):
@@ -1468,7 +1533,7 @@ class XtermBridge(QObject):
 class XtermTerminalWidget(QFrame):
     def __init__(self, controller: "MainWindow", profile_id: str, active: bool) -> None:
         super().__init__()
-        if QWebEngineView is None or QWebChannel is None:
+        if not ensure_web_engine():
             raise RuntimeError("Qt WebEngine 或 Qt WebChannel 不可用。")
         self.controller = controller
         self.profile_id = profile_id
@@ -1495,8 +1560,7 @@ class XtermTerminalWidget(QFrame):
     def assets_available() -> bool:
         vendor = ASSETS_DIR / "vendor" / "xterm"
         return (
-            QWebEngineView is not None
-            and QWebChannel is not None
+            ensure_web_engine()
             and (vendor / "xterm.js").exists()
             and (vendor / "xterm.css").exists()
             and (vendor / "xterm-addon-fit.js").exists()
@@ -2779,8 +2843,8 @@ class MainWindow(QMainWindow):
             QToolButton { padding: 3px 7px; border-radius: 5px; color: #5f6b66; }
             QToolButton:hover { background: rgba(31,41,37,0.07); color: #1f2925; }
             QToolButton:checked { background: #edf3ff; color: #2e5cc7; border: 1px solid #b7c9f4; }
-            QLineEdit, QSpinBox, QComboBox { min-height: 26px; padding: 5px 7px; border: 1px solid #c8d2ce; border-radius: 6px; background: rgba(255,255,255,0.96); color: #1f2925; }
-            QLineEdit:focus, QSpinBox:focus, QComboBox:focus { border-color: #98b1e5; }
+            QLineEdit, QComboBox { min-height: 26px; padding: 5px 7px; border: 1px solid #c8d2ce; border-radius: 6px; background: rgba(255,255,255,0.96); color: #1f2925; }
+            QLineEdit:focus, QComboBox:focus { border-color: #98b1e5; }
             QPlainTextEdit, QTextEdit, QTreeWidget { border: 1px solid #d0d9d6; border-radius: 8px; background: rgba(255,255,255,0.96); selection-background-color: #dce8ff; }
             QHeaderView::section { background: #f4f7f6; color: #5f6b66; padding: 5px 7px; border: 0; border-bottom: 1px solid #d8e1de; font-weight: 650; }
             QTreeWidget::item { min-height: 22px; }
@@ -2957,15 +3021,15 @@ class MainWindow(QMainWindow):
         browser = QWidget()
         browser_layout = QVBoxLayout(browser)
         browser_layout.setContentsMargins(0, 0, 0, 0)
-        if QWebEngineView is not None and tunnel_status == "connected":
-            self.current_webview = QWebEngineView()
-            browser_layout.addWidget(self.current_webview, 1)
-            self.load_web_url(profile)
-        elif QWebEngineView is not None:
+        if tunnel_status != "connected":
             placeholder = QLabel(f"连接成功后，这里会显示 {profile.workspace_title}")
             placeholder.setAlignment(Qt.AlignCenter)
             placeholder.setStyleSheet("color: #6b7280; background: white; border-radius: 8px;")
             browser_layout.addWidget(placeholder, 1)
+        elif ensure_web_engine():
+            self.current_webview = QWebEngineView()
+            browser_layout.addWidget(self.current_webview, 1)
+            self.load_web_url(profile)
         else:
             fallback = QFrame()
             fallback_layout = QVBoxLayout(fallback)
@@ -3030,7 +3094,7 @@ class MainWindow(QMainWindow):
         if status == "connected" and old != "connected":
             active = self.profile_by_id(profile_id)
             if active is not None:
-                if QWebEngineView is None:
+                if not ensure_web_engine():
                     webbrowser.open(active.local_url)
                 else:
                     selected = self.selected_profile()
@@ -3044,7 +3108,7 @@ class MainWindow(QMainWindow):
     def load_web_url(self, profile: SSHProfile) -> None:
         if self.current_webview is not None:
             self.current_webview.load(QUrl(profile.local_url))
-        elif QWebEngineView is None:
+        elif not ensure_web_engine():
             webbrowser.open(profile.local_url)
 
     def render_sftp_workspace(self, profile: SSHProfile) -> None:
@@ -3089,6 +3153,14 @@ class MainWindow(QMainWindow):
         add_tab = QToolButton()
         add_tab.setText("+")
         add_tab.setToolTip("新增 SFTP 标签")
+        add_tab.setCursor(Qt.PointingHandCursor)
+        add_tab.setFixedSize(30, 28)
+        add_tab.setStyleSheet(
+            "QToolButton { margin: 2px 4px; border-radius: 7px; border: 1px solid #2e5cc7;"
+            "background: #2e5cc7; color: #ffffff; font-size: 18px; font-weight: 800; padding: 0; }"
+            "QToolButton:hover { background: #254fb0; border-color: #254fb0; }"
+            "QToolButton:pressed { background: #1f469f; border-color: #1f469f; }"
+        )
         add_tab.clicked.connect(lambda _checked=False, selected_profile=profile: self.add_sftp_tab(selected_profile))
         tabs.setCornerWidget(add_tab, Qt.TopRightCorner)
 
