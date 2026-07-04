@@ -199,6 +199,8 @@ jobs:
           417ssh $VERSION portable packages.
 
           Highlights:
+          - 0.6.1 fixes a Windows startup failure path by avoiding WebView2 creation on the first screen and writing native crash logs to \`%LOCALAPPDATA%\\417ssh\\logs\\windows-native.log\`.
+          - If embedded WebView2 fails, Windows now keeps the main window open and falls back to the system browser for Jupyter/RStudio pages.
           - Windows has been rebuilt as a native WPF/.NET 8 app instead of the old Python/PySide6/QtWebEngine package.
           - Windows keeps the same profile file at \`%APPDATA%\\417ssh\\profiles.json\`, so existing saved workspaces continue to load locally.
           - Windows terminal is now an embedded xterm.js terminal connected to an SSH.NET PTY ShellStream.

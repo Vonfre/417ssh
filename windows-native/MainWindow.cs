@@ -265,7 +265,15 @@ public sealed class MainWindow : Window
 
         if (profile.workspaceKind == WorkspaceKinds.Terminal)
         {
-            _content.Children.Add(new TerminalWorkspaceView(profile, _terminalSessions, _sftpSessions, EditCurrentProfile));
+            try
+            {
+                _content.Children.Add(new TerminalWorkspaceView(profile, _terminalSessions, _sftpSessions, EditCurrentProfile));
+            }
+            catch (Exception exception)
+            {
+                AppLog.Error("Terminal workspace failed", exception);
+                _content.Children.Add(FeatureErrorState("终端初始化失败", "内置终端依赖 WebView2。请先使用系统 SSH 或安装 WebView2 Runtime。", exception));
+            }
         }
         else if (profile.workspaceKind == WorkspaceKinds.Sftp)
         {
@@ -302,7 +310,7 @@ public sealed class MainWindow : Window
         actions.Children.Add(PrimaryButton(_tunnels.IsConnected(profile.id) ? "重新连接" : "连接", "\uE768", async (_, _) => await RunUiAsync(() =>
         {
             _tunnels.Connect(profile);
-            Dispatcher.Invoke(() => NavigateWeb(profile));
+            Dispatcher.Invoke(ShowSelectedProfile);
         })));
         actions.Children.Add(SecondaryButton("断开", "\uE711", (_, _) =>
         {
@@ -316,16 +324,24 @@ public sealed class MainWindow : Window
         toolbar.Child = tools;
         root.Children.Add(toolbar);
 
-        var web = GetWebView(profile.id);
-        web.Margin = new Thickness(0);
-        root.Children.Add(web);
         if (_tunnels.IsConnected(profile.id))
         {
-            NavigateWeb(profile);
+            try
+            {
+                var web = GetWebView(profile.id);
+                web.Margin = new Thickness(0);
+                root.Children.Add(web);
+                _ = NavigateWeb(profile);
+            }
+            catch (Exception exception)
+            {
+                AppLog.Error("WebView2 creation failed", exception);
+                root.Children.Add(WebFallbackState(profile, exception));
+            }
         }
         else
         {
-            web.NavigateToString(SimpleHtml($"{profile.WorkspaceTitle} 未连接", "点击上方连接后会在这里打开本地网页。"));
+            root.Children.Add(EmptyState($"{profile.WorkspaceTitle} 未连接", "点击上方连接后会在这里打开本地网页；如果 WebView2 不可用，会自动使用系统浏览器。"));
         }
         return root;
     }
@@ -341,11 +357,32 @@ public sealed class MainWindow : Window
         return web;
     }
 
-    private async void NavigateWeb(SshProfile profile)
+    private async Task NavigateWeb(SshProfile profile)
     {
-        var web = GetWebView(profile.id);
-        await web.EnsureCoreWebView2Async();
-        web.CoreWebView2.Navigate(profile.LocalUrl);
+        try
+        {
+            var web = GetWebView(profile.id);
+            await web.EnsureCoreWebView2Async();
+            web.CoreWebView2.Navigate(profile.LocalUrl);
+        }
+        catch (Exception exception)
+        {
+            AppLog.Error("WebView2 navigation failed", exception);
+            try
+            {
+                Process.Start(new ProcessStartInfo(profile.LocalUrl) { UseShellExecute = true });
+            }
+            catch (Exception browserException)
+            {
+                AppLog.Error("Browser fallback failed", browserException);
+            }
+
+            MessageBox.Show(
+                "内置网页组件 WebView2 初始化失败，已尝试用系统浏览器打开。\n\n日志位置：\n" + AppPaths.NativeLogFile,
+                "WebView2 不可用",
+                MessageBoxButton.OK,
+                MessageBoxImage.Warning);
+        }
     }
 
     private void OpenAddMenu()
@@ -434,6 +471,19 @@ public sealed class MainWindow : Window
                 }
             }
         };
+    }
+
+    private static Border FeatureErrorState(string title, string subtitle, Exception exception)
+    {
+        return EmptyState(title, subtitle + "\n\n日志：" + AppPaths.NativeLogFile + "\n错误：" + exception.Message);
+    }
+
+    private static Border WebFallbackState(SshProfile profile, Exception exception)
+    {
+        var panel = EmptyState(
+            "内置网页不可用",
+            "WebView2 初始化失败。可以点击上方“浏览器”用系统浏览器打开：" + profile.LocalUrl + "\n\n日志：" + AppPaths.NativeLogFile + "\n错误：" + exception.Message);
+        return panel;
     }
 
     private static string SimpleHtml(string title, string subtitle)

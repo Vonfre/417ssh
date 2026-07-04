@@ -38,7 +38,42 @@ public static class AppPaths
         }
     }
 
+    public static string LogsDirectory
+    {
+        get
+        {
+            var root = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+            return Path.Combine(root, "417ssh", "logs");
+        }
+    }
+
+    public static string NativeLogFile => Path.Combine(LogsDirectory, "windows-native.log");
+
     public static string BaseDirectory => AppContext.BaseDirectory;
+}
+
+public static class AppLog
+{
+    public static void Info(string message) => Write("INFO", message);
+
+    public static void Error(string context, Exception exception)
+    {
+        Write("ERROR", context + Environment.NewLine + exception);
+    }
+
+    private static void Write(string level, string message)
+    {
+        try
+        {
+            Directory.CreateDirectory(AppPaths.LogsDirectory);
+            var line = $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss}] {level} {message}{Environment.NewLine}";
+            File.AppendAllText(AppPaths.NativeLogFile, line, new UTF8Encoding(false));
+        }
+        catch
+        {
+            // Logging must never prevent the app from opening.
+        }
+    }
 }
 
 public static class AppVersion
@@ -57,7 +92,7 @@ public static class AppVersion
                 }
             }
 
-            return "0.6.0";
+            return "0.6.1";
         }
     }
 }
