@@ -57,7 +57,7 @@ Windows portable 版本不需要安装 Python。配置文件保存在：
 - Windows 版 SFTP 文件列表使用文件/文件夹图标，终端侧栏的路径同步按钮也与 macOS 版一样改为图标按钮。
 - Windows 版配置窗口和 SFTP 工作区做了更接近 macOS 的视觉修整：主操作按钮更清晰，端口字段使用普通数字输入框，SFTP 多标签新增按钮更醒目。
 - Windows 版启动时不再加载旧 Tk 界面和 Qt WebEngine；内置网页和真实终端会在需要时按需加载，降低启动卡顿和不必要依赖。若后续要进一步接近 macOS 的轻量体积，Windows 端需要改走原生 .NET/WinUI + 系统 OpenSSH/WinSCP 这类非 Python 打包路线。
-- 从 GitHub Releases 检查更新，并可直接下载、后台安装、重启到新版；Windows 更新界面会显示下载进度，后台 updater 会在主程序退出后自解压 zip、替换当前 portable 文件夹并重启，不会弹出命令行窗口。
+- 从 GitHub Releases 检查更新，并可直接下载、后台安装、重启到新版；Windows 更新界面会显示下载进度、下载目录和安装日志，后台 updater 会在主程序退出后自解压 zip、替换当前 portable 文件夹并重启，不会弹出命令行窗口。
 
 ## 版本与发布
 
@@ -96,7 +96,7 @@ windows/    Windows 版本，Python + PySide6/Qt + Paramiko
 
 - macOS 版本以 app zip 分发；解压后得到的 `.app` 就是可运行应用，后续可在设置里直接更新。
 - 当前 macOS 包尚未做 Apple Developer ID 公证，首次双击可能触发 Gatekeeper 提示；按上面的右键打开步骤即可继续。
-- Windows 版本以 portable zip 文件夹分发；解压后运行 `417ssh.exe`，后续可在设置里直接更新，安装阶段会显示下载进度，并由后台 updater 自解压更新包、替换 portable 文件夹、自动重启。
+- Windows 版本以 portable zip 文件夹分发；解压后运行 `417ssh.exe`，后续可在设置里直接更新，安装阶段会显示下载进度、下载目录和安装日志，并由后台 updater 自解压更新包、替换 portable 文件夹、自动重启。
 - 如果你正在从 `0.4.5` 之前的 Windows 版升级，旧版更新器可能会弹出 `find "<PID>"` 命令行并中断；请手动下载新版 zip 覆盖一次，之后的版本会使用新的后台更新器。
 - SSH 密码会随连接配置保存在应用配置里；如果不填写密码，应用会使用密钥或本机 SSH agent。
 - 连接配置保存在本机用户目录，不会写入 GitHub 仓库或发布包。

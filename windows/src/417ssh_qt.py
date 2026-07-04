@@ -92,7 +92,7 @@ def app_version() -> str:
         text = version_file.read_text(encoding="utf-8").strip()
         if text:
             return text
-    return "0.5.1"
+    return "0.5.2"
 
 
 CURRENT_VERSION = app_version()
@@ -406,7 +406,17 @@ def fetch_latest_release() -> dict:
         with urllib.request.urlopen(request, timeout=20) as response:
             return json.loads(response.read().decode("utf-8"))
     except urllib.error.HTTPError as exc:
-        raise RuntimeError(github_http_error_message(exc.code)) from exc
+        detail = ""
+        try:
+            payload = json.loads(exc.read().decode("utf-8", errors="replace"))
+            if isinstance(payload, dict):
+                detail = str(payload.get("message") or "")
+        except Exception:
+            detail = ""
+        message = github_http_error_message(exc.code)
+        raise RuntimeError(f"{message}{f'：{detail}' if detail else ''}") from exc
+    except urllib.error.URLError as exc:
+        raise RuntimeError(f"无法连接 GitHub 更新服务：{exc.reason}") from exc
 
 
 def github_http_error_message(status: int) -> str:
@@ -416,9 +426,47 @@ def github_http_error_message(status: int) -> str:
 
 
 def update_work_dir() -> Path:
-    root = Path(tempfile.gettempdir()) / "417ssh-updates"
+    user_root = os.environ.get("LOCALAPPDATA") or os.environ.get("APPDATA")
+    if user_root:
+        root = Path(user_root) / APP_NAME / "updates"
+    else:
+        root = Path.home() / f".{APP_NAME}" / "updates"
     root.mkdir(parents=True, exist_ok=True)
     return root
+
+
+def update_install_state_path() -> Path:
+    return update_work_dir() / "last-update-state.json"
+
+
+def write_update_install_state(state: dict) -> None:
+    data = dict(state)
+    data["time"] = time.strftime("%Y-%m-%dT%H:%M:%S")
+    update_install_state_path().write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def read_update_install_state() -> dict | None:
+    path = update_install_state_path()
+    if not path.exists():
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8-sig"))
+    except Exception:
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def open_path_in_file_manager(path: Path) -> None:
+    target = path if path.exists() else path.parent
+    if sys.platform == "win32":
+        if target.is_file():
+            subprocess.Popen(["explorer.exe", "/select,", str(target)])
+        else:
+            os.startfile(str(target))  # type: ignore[attr-defined]
+        return
+    if target.is_file():
+        target = target.parent
+    webbrowser.open(target.as_uri())
 
 
 def download_release_asset(asset: dict, progress_callback: Callable[[int, int | None], None] | None = None) -> Path:
@@ -455,13 +503,15 @@ def download_release_asset(asset: dict, progress_callback: Callable[[int, int | 
                         progress_callback(downloaded, total_size)
     except urllib.error.HTTPError as exc:
         raise RuntimeError(github_http_error_message(exc.code)) from exc
+    except urllib.error.URLError as exc:
+        raise RuntimeError(f"下载更新包失败：{exc.reason}") from exc
     if destination.exists():
         destination.unlink()
     shutil.move(str(partial_destination), str(destination))
     return destination
 
 
-def prepare_windows_update(package_path: Path) -> Path:
+def prepare_windows_update(package_path: Path, target_version: str = "") -> dict[str, str]:
     if sys.platform != "win32" or not getattr(sys, "frozen", False):
         raise RuntimeError("自动替换只能在打包后的 Windows portable 版中使用。")
 
@@ -476,6 +526,7 @@ def prepare_windows_update(package_path: Path) -> Path:
     backup_dir = install_root / "backup"
     script_path = update_work_dir() / f"install-417ssh-update-{os.getpid()}-{timestamp}.ps1"
     log_path = update_work_dir() / f"install-417ssh-update-{os.getpid()}-{timestamp}.log"
+    status_path = update_install_state_path()
     script_path.write_text(
         windows_update_script(
             pid=os.getpid(),
@@ -485,10 +536,27 @@ def prepare_windows_update(package_path: Path) -> Path:
             backup_dir=backup_dir,
             cleanup_dir=install_root,
             log_path=log_path,
+            status_path=status_path,
+            target_version=target_version,
         ),
         encoding="utf-8-sig",
     )
-    return script_path
+    plan = {
+        "package_path": str(package_path),
+        "script_path": str(script_path),
+        "log_path": str(log_path),
+        "status_path": str(status_path),
+        "destination": str(current_dir),
+        "target_version": target_version,
+    }
+    write_update_install_state(
+        {
+            "state": "prepared",
+            "message": "更新包已下载，等待应用退出后安装。",
+            **plan,
+        }
+    )
+    return plan
 
 
 def validate_update_package_zip(package_path: Path) -> None:
@@ -549,6 +617,8 @@ def windows_update_script(
     backup_dir: Path,
     cleanup_dir: Path,
     log_path: Path,
+    status_path: Path,
+    target_version: str,
 ) -> str:
     return f"""$ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
@@ -559,6 +629,8 @@ $Destination = {powershell_literal(current_dir)}
 $Backup = {powershell_literal(backup_dir)}
 $Cleanup = {powershell_literal(cleanup_dir)}
 $LogPath = {powershell_literal(log_path)}
+$StatusPath = {powershell_literal(status_path)}
+$TargetVersion = {powershell_literal(target_version)}
 $ExePath = Join-Path -Path $Destination -ChildPath '417ssh.exe'
 
 function Write-UpdateLog {{
@@ -569,6 +641,30 @@ function Write-UpdateLog {{
             New-Item -ItemType Directory -Force -Path $parent | Out-Null
         }}
         Add-Content -LiteralPath $LogPath -Value ("{{0}} {{1}}" -f (Get-Date -Format 's'), $Message) -Encoding UTF8
+    }} catch {{}}
+}}
+
+function Write-UpdateState {{
+    param(
+        [string]$State,
+        [string]$Message
+    )
+    try {{
+        $parent = Split-Path -Parent $StatusPath
+        if ($parent) {{
+            New-Item -ItemType Directory -Force -Path $parent | Out-Null
+        }}
+        $payload = [ordered]@{{
+            state = $State
+            message = $Message
+            target_version = $TargetVersion
+            package_path = $Package
+            script_path = $PSCommandPath
+            log_path = $LogPath
+            destination = $Destination
+            time = (Get-Date -Format 'o')
+        }}
+        $payload | ConvertTo-Json -Compress | Set-Content -LiteralPath $StatusPath -Encoding UTF8
     }} catch {{}}
 }}
 
@@ -696,6 +792,7 @@ function Copy-DirectoryContents {{
 
 try {{
     Write-UpdateLog 'Updater started.'
+    Write-UpdateState 'running' '后台安装已启动，正在等待主程序退出。'
     Wait-AppExit
     Stop-AppProcessesInDestination
 
@@ -725,6 +822,7 @@ try {{
     Invoke-WithRetry -Label 'Install copy' -Action {{ Copy-DirectoryContents -From $Source -To $Destination }}
 
     Write-UpdateLog 'Starting updated application.'
+    Write-UpdateState 'success' '更新安装完成，正在启动新版。'
     Start-Process -FilePath $ExePath -WorkingDirectory $Destination
 
     Write-UpdateLog 'Update finished.'
@@ -735,6 +833,7 @@ try {{
     exit 0
 }} catch {{
     Write-UpdateLog ("Update failed: " + $_.Exception.Message)
+    Write-UpdateState 'failed' ("更新安装失败：" + $_.Exception.Message)
     try {{
         if ((Test-Path -LiteralPath $Backup) -and (Test-Path -LiteralPath $Destination)) {{
             Write-UpdateLog 'Restoring previous application.'
@@ -823,7 +922,7 @@ class Bridge(QObject):
     sftp_status = Signal(str, str)
     update_done = Signal(dict, object)
     update_error = Signal(str)
-    update_downloaded = Signal(str)
+    update_downloaded = Signal(object)
     update_status = Signal(str)
     update_progress = Signal(object, object, str)
 
@@ -1276,14 +1375,20 @@ class AppSettingsDialog(QDialog):
         update_status: str,
         latest_release: dict | None,
         update_asset: dict | None,
+        update_download_path: str = "",
+        update_install_log_path: str = "",
+        update_install_state: dict | None = None,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
         self.settings = dict(settings)
         self.latest_release = latest_release
         self.update_asset = update_asset
+        self.update_download_path = update_download_path
+        self.update_install_log_path = update_install_log_path
+        self.update_install_state = update_install_state
         self.setWindowTitle("417ssh 设置")
-        self.resize(580, 480)
+        self.resize(620, 540)
         self.setMinimumWidth(520)
 
         layout = QVBoxLayout(self)
@@ -1315,7 +1420,15 @@ class AppSettingsDialog(QDialog):
         self.current_version_label = QLabel(f"当前版本：{CURRENT_VERSION}")
         self.latest_version_label = QLabel("最新版本：尚未检查")
         self.update_asset_label = QLabel("更新包：尚未检查")
-        for label in (self.current_version_label, self.latest_version_label, self.update_asset_label):
+        self.update_download_label = QLabel("下载位置：尚未下载")
+        self.update_log_label = QLabel("安装日志：暂无")
+        for label in (
+            self.current_version_label,
+            self.latest_version_label,
+            self.update_asset_label,
+            self.update_download_label,
+            self.update_log_label,
+        ):
             label.setWordWrap(True)
             label.setStyleSheet("color: #38423f; font-size: 12px;")
             info_layout.addWidget(label)
@@ -1357,21 +1470,48 @@ class AppSettingsDialog(QDialog):
         button_row.addStretch(1)
         layout.addLayout(button_row)
 
+        path_button_row = QHBoxLayout()
+        self.open_update_dir_button = QPushButton("打开更新目录")
+        self.open_update_dir_button.clicked.connect(lambda: open_path_in_file_manager(update_work_dir()))
+        path_button_row.addWidget(self.open_update_dir_button)
+        self.open_log_button = QPushButton("打开安装日志")
+        self.open_log_button.clicked.connect(self.open_update_log)
+        path_button_row.addWidget(self.open_log_button)
+        path_button_row.addStretch(1)
+        layout.addLayout(path_button_row)
+
         tip = QLabel("Windows 版会显示下载进度，并把 GitHub Release 中的 portable .zip 交给后台 updater 自解压、替换当前 portable 文件夹，然后自动重启应用。")
         tip.setWordWrap(True)
         tip.setStyleSheet("color: #6b7280; font-size: 12px;")
         layout.addWidget(tip)
         layout.addStretch(1)
 
-        self.set_update_state(update_status, latest_release, update_asset)
+        self.set_update_state(update_status, latest_release, update_asset, update_download_path, update_install_log_path, update_install_state)
 
     def on_auto_check_toggled(self, checked: bool) -> None:
         self.settings["auto_check_updates"] = checked
         self.settings_changed.emit(dict(self.settings))
 
-    def set_update_state(self, update_status: str, latest_release: dict | None, update_asset: dict | None) -> None:
+    def open_update_log(self) -> None:
+        if self.update_install_log_path:
+            open_path_in_file_manager(Path(self.update_install_log_path))
+        else:
+            open_path_in_file_manager(update_work_dir())
+
+    def set_update_state(
+        self,
+        update_status: str,
+        latest_release: dict | None,
+        update_asset: dict | None,
+        update_download_path: str = "",
+        update_install_log_path: str = "",
+        update_install_state: dict | None = None,
+    ) -> None:
         self.latest_release = latest_release
         self.update_asset = update_asset
+        self.update_download_path = update_download_path
+        self.update_install_log_path = update_install_log_path
+        self.update_install_state = update_install_state
         self.status_label.setText(update_status)
         self.latest_version_label.setText(
             f"最新版本：{release_version(latest_release)}" if latest_release else "最新版本：尚未检查"
@@ -1382,6 +1522,10 @@ class AppSettingsDialog(QDialog):
             self.update_asset_label.setText("更新包：未找到 Windows portable .zip 更新包")
         else:
             self.update_asset_label.setText("更新包：尚未检查")
+        self.update_download_label.setText(f"下载位置：{update_download_path or str(update_work_dir())}")
+        log_text = update_install_log_path or str((update_install_state or {}).get("log_path") or "")
+        self.update_log_label.setText(f"安装日志：{log_text or '暂无'}")
+        self.open_log_button.setEnabled(bool(log_text))
         self.install_button.setText("下载并安装新版" if update_asset is not None and "发现新版本" in update_status else "下载并安装更新")
         is_busy = "正在" in update_status
         self.install_button.setEnabled(update_asset is not None and "发现新版本" in update_status and not is_busy)
@@ -2721,11 +2865,15 @@ class MainWindow(QMainWindow):
         self.current_remote_path = "."
         self.current_webview = None
         self.app_settings = load_app_settings()
-        self.update_status = "尚未检查更新"
+        self.update_install_state = read_update_install_state()
+        self.update_status = self.initial_update_status()
         self.latest_release: dict | None = None
         self.update_asset: dict | None = None
         self.update_progress_downloaded = 0
         self.update_progress_total: int | None = None
+        self.update_download_path = str(self.update_install_state.get("package_path") or "") if self.update_install_state else ""
+        self.update_install_log_path = str(self.update_install_state.get("log_path") or "") if self.update_install_state else ""
+        self.update_install_script_path = str(self.update_install_state.get("script_path") or "") if self.update_install_state else ""
         self.settings_dialog: AppSettingsDialog | None = None
         self.update_check_silent = False
         self.sftp_connections: dict[str, object] = {}
@@ -2752,6 +2900,19 @@ class MainWindow(QMainWindow):
         self.render_selected_profile()
         if self.app_settings.get("auto_check_updates", True):
             QTimer.singleShot(1200, lambda: self.check_updates(silent=True))
+
+    def initial_update_status(self) -> str:
+        state = self.update_install_state or {}
+        status = str(state.get("state") or "")
+        message = str(state.get("message") or "")
+        if status == "failed":
+            return f"上次更新安装失败：{message or '请查看安装日志'}"
+        if status == "success":
+            version = str(state.get("target_version") or "").strip()
+            return f"上次更新安装完成{f'：{version}' if version else ''}"
+        if status in {"prepared", "running"}:
+            return f"上次更新没有完成：{message or status}"
+        return "尚未检查更新"
 
     def install_event_handlers(self) -> None:
         self.bridge.tunnel_log.connect(self.append_tunnel_log)
@@ -4657,6 +4818,9 @@ cp -a -- "$src" "$target_dir/"
             self.update_status,
             self.latest_release,
             self.update_asset,
+            self.update_download_path,
+            self.update_install_log_path,
+            self.update_install_state,
             self,
         )
         self.settings_dialog = dialog
@@ -4713,8 +4877,12 @@ cp -a -- "$src" "$target_dir/"
     def handle_update_error(self, message: str) -> None:
         self.update_progress_downloaded = 0
         self.update_progress_total = None
+        self.update_install_state = read_update_install_state()
+        if self.update_install_state:
+            self.update_download_path = str(self.update_install_state.get("package_path") or self.update_download_path or "")
+            self.update_install_log_path = str(self.update_install_state.get("log_path") or self.update_install_log_path or "")
         if self.update_check_silent:
-            self.update_status = "尚未检查更新"
+            self.update_status = self.initial_update_status()
         else:
             self.update_status = f"更新失败：{message}"
             QMessageBox.critical(self, APP_NAME, self.update_status)
@@ -4728,24 +4896,40 @@ cp -a -- "$src" "$target_dir/"
         self.update_status = "正在下载并准备安装"
         self.update_progress_downloaded = 0
         self.update_progress_total = None
+        self.update_download_path = str(update_work_dir())
+        self.update_install_log_path = ""
+        self.update_install_state = None
         self.update_dialog_refresh()
 
         def work() -> None:
+            path: Path | None = None
             try:
                 def report_progress(downloaded: int, total: int | None) -> None:
                     self.bridge.update_progress.emit(downloaded, total, "正在下载更新包")
 
                 path = download_release_asset(self.update_asset, report_progress)
-                self.bridge.update_status.emit("正在准备后台安装")
-                script_path = prepare_windows_update(path)
-                self.bridge.update_downloaded.emit(str(script_path))
+                self.bridge.update_status.emit(f"更新包已下载：{path}")
+                version = release_version(self.latest_release or {})
+                plan = prepare_windows_update(path, version)
+                self.bridge.update_downloaded.emit(plan)
             except Exception as exc:
-                self.bridge.update_error.emit(str(exc))
+                message = str(exc)
+                if path is not None:
+                    message = f"{message}\n更新包已保存：{path}"
+                self.bridge.update_error.emit(message)
 
         threading.Thread(target=work, name="UpdateDownload", daemon=True).start()
 
-    def handle_update_downloaded(self, path_text: str) -> None:
-        script_path = Path(path_text)
+    def handle_update_downloaded(self, plan_object: object) -> None:
+        if isinstance(plan_object, dict):
+            plan = {str(key): str(value) for key, value in plan_object.items()}
+        else:
+            plan = {"script_path": str(plan_object)}
+        script_path = Path(plan.get("script_path") or "")
+        self.update_download_path = plan.get("package_path") or self.update_download_path
+        self.update_install_log_path = plan.get("log_path") or self.update_install_log_path
+        self.update_install_script_path = str(script_path)
+        self.update_install_state = read_update_install_state()
         self.update_status = "正在后台安装更新，应用将自动重启"
         if self.update_progress_total:
             self.update_progress_downloaded = self.update_progress_total
@@ -4755,7 +4939,8 @@ cp -a -- "$src" "$target_dir/"
             launch_windows_update_script(script_path)
             app = QApplication.instance()
             if app is not None:
-                QTimer.singleShot(250, app.quit)
+                QTimer.singleShot(250, self.close)
+                QTimer.singleShot(1200, app.quit)
         except Exception as exc:
             self.update_status = f"启动后台安装失败：{exc}"
             self.update_dialog_refresh()
@@ -4781,7 +4966,14 @@ cp -a -- "$src" "$target_dir/"
 
     def update_dialog_refresh(self) -> None:
         if self.settings_dialog is not None:
-            self.settings_dialog.set_update_state(self.update_status, self.latest_release, self.update_asset)
+            self.settings_dialog.set_update_state(
+                self.update_status,
+                self.latest_release,
+                self.update_asset,
+                self.update_download_path,
+                self.update_install_log_path,
+                self.update_install_state,
+            )
             self.settings_dialog.set_update_progress(
                 self.update_progress_downloaded,
                 self.update_progress_total,
