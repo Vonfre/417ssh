@@ -725,36 +725,36 @@ public sealed class TerminalControl : Border
         var css = new Uri(Path.Combine(AppPaths.BaseDirectory, "assets", "vendor", "xterm", "xterm.css")).AbsoluteUri;
         var js = new Uri(Path.Combine(AppPaths.BaseDirectory, "assets", "vendor", "xterm", "xterm.js")).AbsoluteUri;
         var fit = new Uri(Path.Combine(AppPaths.BaseDirectory, "assets", "vendor", "xterm", "xterm-addon-fit.js")).AbsoluteUri;
-        return $"""
+        return $$"""
 <!doctype html>
 <html>
 <head>
 <meta charset="utf-8">
-<link rel="stylesheet" href="{css}">
+<link rel="stylesheet" href="{{css}}">
 <style>
-html,body,#terminal{{margin:0;width:100%;height:100%;background:#0b1220;overflow:hidden;}}
-.xterm{{padding:10px;box-sizing:border-box;}}
+html,body,#terminal{margin:0;width:100%;height:100%;background:#0b1220;overflow:hidden;}
+.xterm{padding:10px;box-sizing:border-box;}
 </style>
 </head>
 <body>
 <div id="terminal"></div>
-<script src="{js}"></script>
-<script src="{fit}"></script>
+<script src="{{js}}"></script>
+<script src="{{fit}}"></script>
 <script>
-const term = new Terminal({{cursorBlink:true,fontFamily:'Cascadia Mono,Consolas,monospace',fontSize:13,theme:{{background:'#0b1220',foreground:'#dbeafe',cursor:'#93c5fd'}}}});
+const term = new Terminal({cursorBlink:true,fontFamily:'Cascadia Mono,Consolas,monospace',fontSize:13,theme:{background:'#0b1220',foreground:'#dbeafe',cursor:'#93c5fd'}});
 const fitAddon = new FitAddon.FitAddon();
 term.loadAddon(fitAddon);
 term.open(document.getElementById('terminal'));
 fitAddon.fit();
 term.focus();
-term.onData(data => chrome.webview.postMessage({{type:'input',data}}));
-function resize(){{ fitAddon.fit(); chrome.webview.postMessage({{type:'resize',cols:term.cols,rows:term.rows}}); }}
+term.onData(data => chrome.webview.postMessage({type:'input',data}));
+function resize(){ fitAddon.fit(); chrome.webview.postMessage({type:'resize',cols:term.cols,rows:term.rows}); }
 window.addEventListener('resize', resize);
-chrome.webview.addEventListener('message', event => {{
+chrome.webview.addEventListener('message', event => {
   const msg = event.data;
   if (msg.type === 'output') term.write(msg.data);
   if (msg.type === 'clear') term.clear();
-}});
+});
 setTimeout(resize, 80);
 </script>
 </body>
