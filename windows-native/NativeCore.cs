@@ -1036,7 +1036,7 @@ public sealed class SftpEntry
         };
     }
 
-    public static SftpEntry FromRemote(SftpFile file)
+    public static SftpEntry FromRemote(ISftpFile file)
     {
         return new SftpEntry
         {
