@@ -725,12 +725,12 @@ public sealed class TerminalControl : Border
         var css = new Uri(Path.Combine(AppPaths.BaseDirectory, "assets", "vendor", "xterm", "xterm.css")).AbsoluteUri;
         var js = new Uri(Path.Combine(AppPaths.BaseDirectory, "assets", "vendor", "xterm", "xterm.js")).AbsoluteUri;
         var fit = new Uri(Path.Combine(AppPaths.BaseDirectory, "assets", "vendor", "xterm", "xterm-addon-fit.js")).AbsoluteUri;
-        return $$"""
+        return $$$"""
 <!doctype html>
 <html>
 <head>
 <meta charset="utf-8">
-<link rel="stylesheet" href="{{css}}">
+<link rel="stylesheet" href="{{{css}}}">
 <style>
 html,body,#terminal{margin:0;width:100%;height:100%;background:#0b1220;overflow:hidden;}
 .xterm{padding:10px;box-sizing:border-box;}
@@ -738,8 +738,8 @@ html,body,#terminal{margin:0;width:100%;height:100%;background:#0b1220;overflow:
 </head>
 <body>
 <div id="terminal"></div>
-<script src="{{js}}"></script>
-<script src="{{fit}}"></script>
+<script src="{{{js}}}"></script>
+<script src="{{{fit}}}"></script>
 <script>
 const term = new Terminal({cursorBlink:true,fontFamily:'Cascadia Mono,Consolas,monospace',fontSize:13,theme:{background:'#0b1220',foreground:'#dbeafe',cursor:'#93c5fd'}});
 const fitAddon = new FitAddon.FitAddon();
