@@ -14,7 +14,7 @@
 
 ```powershell
 cd windows-native
-$env:VERSION = "0.6.2"
+$env:VERSION = "0.6.3"
 .\build_portable.ps1
 ```
 

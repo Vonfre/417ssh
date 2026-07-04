@@ -199,6 +199,8 @@ jobs:
           417ssh $VERSION portable packages.
 
           Highlights:
+          - 0.6.3 fixes the remaining Windows Jupyter/RStudio connection failure where imported \`ssh -g\` commands made SSH.NET receive \`0.0.0.0\` as the local forwarding bind host. Windows native forwarding now binds to \`127.0.0.1\` for stability instead of passing an unsupported unspecified address to SSH.NET.
+          - Windows updates now download beside the current portable app in \`.417ssh-updates\`, then automatically install after download by extracting the zip's top-level \`417ssh\` folder, replacing the current app folder contents, restarting, and cleaning the update package.
           - 0.6.2 fixes Windows SSH/SFTP/terminal connection errors caused by treating \`0.0.0.0\` or \`::\` as a target address. Port-forward service hosts using those unspecified addresses are normalized to \`127.0.0.1\`, while invalid SSH target hosts now show a Chinese validation message.
           - Windows terminal workspaces now include Ctrl+C and an "原生终端" action that opens the current profile through Windows Terminal or \`cmd.exe\` with system \`ssh.exe\`.
           - 0.6.1 fixed a Windows startup failure path by avoiding WebView2 creation on the first screen and writing native crash logs to \`%LOCALAPPDATA%\\417ssh\\logs\\windows-native.log\`.

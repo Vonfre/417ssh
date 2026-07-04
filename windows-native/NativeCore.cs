@@ -50,6 +50,21 @@ public static class AppPaths
     public static string NativeLogFile => Path.Combine(LogsDirectory, "windows-native.log");
 
     public static string BaseDirectory => AppContext.BaseDirectory;
+
+    public static string InstallDirectory
+    {
+        get
+        {
+            var exePath = Process.GetCurrentProcess().MainModule?.FileName;
+            if (!string.IsNullOrWhiteSpace(exePath))
+            {
+                return Path.GetDirectoryName(exePath)!;
+            }
+            return BaseDirectory.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        }
+    }
+
+    public static string PortableUpdatesDirectory => Path.Combine(InstallDirectory, ".417ssh-updates");
 }
 
 public static class AppLog
@@ -92,7 +107,7 @@ public static class AppVersion
                 }
             }
 
-            return "0.6.2";
+            return "0.6.3";
         }
     }
 }
@@ -969,12 +984,14 @@ public sealed class TunnelSession : IDisposable
     private ForwardedPortLocal? _forward;
 
     public bool IsConnected => _client?.IsConnected == true && _forward?.IsStarted == true;
+    public bool UsesLocalFallbackBinding { get; private set; }
 
     public void Connect(SshProfile profile)
     {
         Disconnect();
         _client = SshConnectionFactory.CreateConnectedSshClient(profile, out _context);
-        var boundHost = profile.allowRemoteLocalPortAccess ? "0.0.0.0" : "127.0.0.1";
+        UsesLocalFallbackBinding = profile.allowRemoteLocalPortAccess;
+        var boundHost = "127.0.0.1";
         var remoteHost = HostNames.NormalizeForwardTarget(profile.remoteHost);
         _forward = new ForwardedPortLocal(boundHost, (uint)profile.localPort, remoteHost, (uint)profile.remotePort);
         _client.AddForwardedPort(_forward);
@@ -1652,8 +1669,12 @@ public sealed class UpdateService
             throw new InvalidOperationException("最新 Release 中没有 Windows portable zip");
         }
 
-        Directory.CreateDirectory(AppPaths.UpdatesDirectory);
-        var destination = Path.Combine(AppPaths.UpdatesDirectory, asset.Name);
+        Directory.CreateDirectory(AppPaths.PortableUpdatesDirectory);
+        var destination = Path.Combine(AppPaths.PortableUpdatesDirectory, asset.Name);
+        if (File.Exists(destination))
+        {
+            File.Delete(destination);
+        }
         using var client = CreateHttpClient();
         using var response = await client.GetAsync(asset.Url, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
         response.EnsureSuccessStatusCode();
@@ -1695,10 +1716,11 @@ public sealed class UpdateService
         }
 
         var appDir = Path.GetDirectoryName(exePath)!;
-        var scriptPath = Path.Combine(AppPaths.UpdatesDirectory, "install-417ssh-update.ps1");
-        var logPath = Path.Combine(AppPaths.UpdatesDirectory, "install.log");
+        var updateDir = Path.GetDirectoryName(zipPath)!;
+        var scriptPath = Path.Combine(updateDir, "install-417ssh-update.ps1");
+        var logPath = Path.Combine(updateDir, "install.log");
         var script = BuildInstallerScript();
-        Directory.CreateDirectory(AppPaths.UpdatesDirectory);
+        Directory.CreateDirectory(updateDir);
         File.WriteAllText(scriptPath, script, new UTF8Encoding(false));
 
         var args = string.Join(" ", new[]
@@ -1753,26 +1775,52 @@ try {
   Write-Log "Waiting for parent process $ParentPid"
   try { Wait-Process -Id $ParentPid -Timeout 60 } catch {}
 
-  $stage = Join-Path (Split-Path -Parent $Zip) ("stage-" + [guid]::NewGuid().ToString("N"))
-  $backup = Join-Path (Split-Path -Parent $Zip) ("backup-" + [guid]::NewGuid().ToString("N"))
+  $updateRoot = Split-Path -Parent $Zip
+  $workRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("417ssh-update-" + [guid]::NewGuid().ToString("N"))
+  $stage = Join-Path $workRoot "stage"
+  $backup = Join-Path $workRoot "backup"
   New-Item -ItemType Directory -Force -Path $stage | Out-Null
+  New-Item -ItemType Directory -Force -Path $backup | Out-Null
   Expand-Archive -Path $Zip -DestinationPath $stage -Force
 
   $source = Get-ChildItem -Path $stage -Recurse -Filter $ExeName | Select-Object -First 1
   if ($null -eq $source) { throw "Cannot find $ExeName in update package" }
   $sourceDir = Split-Path -Parent $source.FullName
 
+  $separator = [System.IO.Path]::DirectorySeparatorChar
+  $resolvedUpdateRoot = (Resolve-Path $updateRoot).Path.TrimEnd($separator)
   Write-Log "Backing up $InstallDir to $backup"
-  Copy-Item -Path $InstallDir -Destination $backup -Recurse -Force
-  Write-Log "Replacing files from $sourceDir"
+  Get-ChildItem -Path $InstallDir -Force | Where-Object {
+    $_.FullName.TrimEnd($separator) -ne $resolvedUpdateRoot
+  } | ForEach-Object {
+    Copy-Item -LiteralPath $_.FullName -Destination $backup -Recurse -Force
+  }
+
+  Write-Log "Removing old application files"
+  Get-ChildItem -Path $InstallDir -Force | Where-Object {
+    $_.FullName.TrimEnd($separator) -ne $resolvedUpdateRoot
+  } | ForEach-Object {
+    Remove-Item -LiteralPath $_.FullName -Recurse -Force
+  }
+
+  Write-Log "Installing files from $sourceDir"
   Copy-Item -Path (Join-Path $sourceDir "*") -Destination $InstallDir -Recurse -Force
   Write-Log "Starting updated app"
   Start-Process -FilePath (Join-Path $InstallDir $ExeName)
   Write-Log "Update completed"
+  Remove-Item -LiteralPath $Zip -Force -ErrorAction SilentlyContinue
+  Remove-Item -LiteralPath $workRoot -Recurse -Force -ErrorAction SilentlyContinue
+  Start-Sleep -Milliseconds 500
+  Remove-Item -LiteralPath $updateRoot -Recurse -Force -ErrorAction SilentlyContinue
 } catch {
   Write-Log ("Update failed: " + $_.Exception.Message)
   try {
     if ((Test-Path $backup) -and (Test-Path $InstallDir)) {
+      Get-ChildItem -Path $InstallDir -Force | Where-Object {
+        $_.FullName.TrimEnd($separator) -ne $resolvedUpdateRoot
+      } | ForEach-Object {
+        Remove-Item -LiteralPath $_.FullName -Recurse -Force
+      }
       Copy-Item -Path (Join-Path $backup "*") -Destination $InstallDir -Recurse -Force
       Start-Process -FilePath (Join-Path $InstallDir $ExeName)
     }

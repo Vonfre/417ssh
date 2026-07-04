@@ -9,10 +9,10 @@
     <RootNamespace>FourOneSevenSsh</RootNamespace>
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <SupportedOSPlatformVersion>10.0.17763.0</SupportedOSPlatformVersion>
-    <Version>0.6.2</Version>
-    <FileVersion>0.6.2.0</FileVersion>
-    <AssemblyVersion>0.6.2.0</AssemblyVersion>
-    <InformationalVersion>0.6.2</InformationalVersion>
+    <Version>0.6.3</Version>
+    <FileVersion>0.6.3.0</FileVersion>
+    <AssemblyVersion>0.6.3.0</AssemblyVersion>
+    <InformationalVersion>0.6.3</InformationalVersion>
   </PropertyGroup>
 
   <ItemGroup>

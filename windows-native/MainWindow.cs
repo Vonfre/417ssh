@@ -575,12 +575,15 @@ public sealed class TerminalWorkspaceView : DockPanel
     private readonly TerminalSession _session;
     private readonly SftpBrowserControl _sftpBrowser;
     private readonly Grid _body = new();
+    private readonly ColumnDefinition _fileColumn = new() { Width = new GridLength(360) };
     private readonly TerminalControl _terminal;
     private readonly TextBlock _status = new();
     private readonly Button _autoSyncButton;
+    private readonly Button _fileButton;
     private readonly Action<string> _stateHandler;
     private readonly Action<string> _directoryHandler;
     private bool _autoSync;
+    private bool _filePaneVisible = true;
 
     public TerminalWorkspaceView(
         SshProfile profile,
@@ -645,7 +648,9 @@ public sealed class TerminalWorkspaceView : DockPanel
         }));
         actions.Children.Add(MainWindow.SecondaryButton("清屏", "\uE894", (_, _) => _terminal.Clear()));
         actions.Children.Add(MainWindow.IconButton("\uE7E8", "中断 Ctrl+C", 32, (_, _) => _session.SendControlC()));
-        actions.Children.Add(MainWindow.SecondaryButton("原生终端", "\uE756", (_, _) => OpenNativeTerminal()));
+        _fileButton = MainWindow.SecondaryButton("文件", "\uE8B7", (_, _) => ToggleFilePane());
+        actions.Children.Add(_fileButton);
+        actions.Children.Add(MainWindow.IconButton("\uE756", "原生终端", 32, (_, _) => OpenNativeTerminal()));
         actions.Children.Add(MainWindow.IconButton("\uE8C8", "将 SFTP 目录路径复制到终端", 32, (_, _) =>
         {
             _terminal.SendText("cd " + ShellEscaper.Quote(_sftpBrowser.CurrentPath));
@@ -659,7 +664,7 @@ public sealed class TerminalWorkspaceView : DockPanel
         toolbar.Child = tools;
 
         _body.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-        _body.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(360) });
+        _body.ColumnDefinitions.Add(_fileColumn);
         _terminal.SetValue(Grid.ColumnProperty, 0);
         _sftpBrowser.SetValue(Grid.ColumnProperty, 1);
         _body.Children.Add(_terminal);
@@ -711,6 +716,14 @@ public sealed class TerminalWorkspaceView : DockPanel
         {
             MessageBox.Show(ex.Message, "原生终端", MessageBoxButton.OK, MessageBoxImage.Error);
         }
+    }
+
+    private void ToggleFilePane()
+    {
+        _filePaneVisible = !_filePaneVisible;
+        _fileColumn.Width = _filePaneVisible ? new GridLength(360) : new GridLength(0);
+        _sftpBrowser.Visibility = _filePaneVisible ? Visibility.Visible : Visibility.Collapsed;
+        _fileButton.Background = _filePaneVisible ? MainWindow.Brush("#DBEAFE") : Brushes.White;
     }
 
     private void ToggleAutoSync()
@@ -1652,7 +1665,7 @@ public sealed class ProfileEditorWindow : Window
 
         AddCheck(panel, "compressionEnabled", "启用压缩", _profile.compressionEnabled);
         AddCheck(panel, "verboseLogging", "详细日志", _profile.verboseLogging);
-        AddCheck(panel, "allowRemoteLocalPortAccess", "允许局域网访问本地转发端口", _profile.allowRemoteLocalPortAccess);
+        AddCheck(panel, "allowRemoteLocalPortAccess", "允许局域网访问本地转发端口（Windows 内置转发会回退到本机）", _profile.allowRemoteLocalPortAccess);
         AddCheck(panel, "keepAliveEnabled", "启用 keepalive", _profile.keepAliveEnabled);
         AddText(panel, "keepAliveInterval", "keepalive 间隔", _profile.keepAliveInterval.ToString());
         AddText(panel, "keepAliveCountMax", "keepalive 次数", _profile.keepAliveCountMax.ToString());
@@ -1776,7 +1789,8 @@ public sealed class SettingsWindow : Window
     {
         var panel = new StackPanel { Margin = new Thickness(18) };
         panel.Children.Add(new TextBlock { Text = $"当前版本：{AppVersion.Current}", FontSize = 16, FontWeight = FontWeights.SemiBold, Foreground = MainWindow.Brush("#172033") });
-        panel.Children.Add(new TextBlock { Text = $"更新目录：{AppPaths.UpdatesDirectory}", FontSize = 12, Foreground = MainWindow.Brush("#64748B"), Margin = new Thickness(0, 6, 0, 12) });
+        panel.Children.Add(new TextBlock { Text = $"安装目录：{AppPaths.InstallDirectory}", FontSize = 12, Foreground = MainWindow.Brush("#64748B"), Margin = new Thickness(0, 6, 0, 4) });
+        panel.Children.Add(new TextBlock { Text = $"更新缓存：{AppPaths.PortableUpdatesDirectory}", FontSize = 12, Foreground = MainWindow.Brush("#64748B"), Margin = new Thickness(0, 0, 0, 12) });
         _status.Text = "可以检查 GitHub Releases 中的新版本。";
         _status.TextWrapping = TextWrapping.Wrap;
         _status.Foreground = MainWindow.Brush("#475569");
@@ -1785,8 +1799,8 @@ public sealed class SettingsWindow : Window
 
         var actions = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right };
         actions.Children.Add(MainWindow.SecondaryButton("检查更新", "\uE895", async (_, _) => await Check()));
-        actions.Children.Add(MainWindow.PrimaryButton("下载更新", "\uE896", async (_, _) => await Download()));
-        actions.Children.Add(MainWindow.SecondaryButton("安装并重启", "\uE777", (_, _) => Install()));
+        actions.Children.Add(MainWindow.PrimaryButton("下载并安装", "\uE896", async (_, _) => await Download()));
+        actions.Children.Add(MainWindow.SecondaryButton("安装已下载包", "\uE777", (_, _) => Install()));
         panel.Children.Add(actions);
         return panel;
     }
@@ -1820,7 +1834,8 @@ public sealed class SettingsWindow : Window
             _progress.Value = 0;
             var progress = new Progress<double>(value => _progress.Value = value);
             _downloadedZip = await _updates.DownloadWindowsZipAsync(_latest, progress, CancellationToken.None);
-            _status.Text = $"下载完成：{_downloadedZip}";
+            _status.Text = $"下载完成，正在退出并安装：{_downloadedZip}";
+            _updates.InstallAfterExit(_downloadedZip);
         }
         catch (Exception ex)
         {
