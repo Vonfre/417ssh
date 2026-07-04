@@ -202,6 +202,8 @@ jobs:
           417ssh $VERSION portable packages.
 
           Highlights:
+          - 0.5.1 fixes terminal-to-SFTP directory sync by actively probing the remote shell \`$PWD\` before refreshing SFTP, so paths such as \`/data/project/0_data\` and \`/data/project/2.docker\` are not truncated.
+          - Windows terminal directory parsing was split into a small dependency-free helper with regression coverage for underscores, dots, spaces, parentheses, Chinese paths, OSC 7, and the internal PWD probe.
           - Windows configuration and SFTP workspace UI were tightened: clearer primary actions, plain numeric port fields without spin arrows, and a visible SFTP tab add button.
           - Windows startup is lighter because the Qt app skips the legacy Tk UI path and lazy-loads Qt WebEngine only when embedded pages or the real terminal are used.
           - Windows portable packaging now uses an onedir app folder, so 417ssh.exe is no longer a giant single-file executable and startup/update replacement is more reliable.

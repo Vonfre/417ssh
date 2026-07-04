@@ -15,13 +15,24 @@ import tempfile
 import threading
 import time
 import urllib.error
-import urllib.parse
 import urllib.request
 import webbrowser
 import zipfile
 from pathlib import Path
 from typing import Callable
 
+from terminal_paths import (
+    DIRECTORY_PROBE_COMMAND,
+    DIRECTORY_PROBE_PATTERN,
+    OSC7_PATTERN,
+    directory_after_cd_command as parsed_directory_after_cd_command,
+    is_probably_truncated_directory as parsed_is_probably_truncated_directory,
+    normalize_terminal_directory as parsed_normalize_terminal_directory,
+    path_from_osc7_payload as parsed_path_from_osc7_payload,
+    path_from_probe_payload,
+    resolve_terminal_directory as parsed_resolve_terminal_directory,
+    cd_target_from_words as parsed_cd_target_from_words,
+)
 from PySide6.QtCore import QByteArray, QMimeData, QObject, QSize, Qt, QTimer, QUrl, Signal, Slot
 from PySide6.QtGui import QColor, QDragEnterEvent, QDropEvent, QFont, QIcon, QIntValidator, QPixmap, QTextCursor
 from PySide6.QtWidgets import (
@@ -81,7 +92,7 @@ def app_version() -> str:
         text = version_file.read_text(encoding="utf-8").strip()
         if text:
             return text
-    return "0.5.0"
+    return "0.5.1"
 
 
 CURRENT_VERSION = app_version()
@@ -2730,6 +2741,7 @@ class MainWindow(QMainWindow):
         self.terminal_directories_by_profile: dict[str, str] = {}
         self.auto_sync_terminal_directory_profile_ids: set[str] = set()
         self.pending_terminal_directory_sync_profile_ids: set[str] = set()
+        self.pending_terminal_directory_probe_commands_by_profile: dict[str, str] = {}
 
         self.setWindowTitle(APP_NAME)
         self.resize(1180, 760)
@@ -3668,6 +3680,7 @@ class MainWindow(QMainWindow):
                 terminal.close()
             self.terminal_status_by_profile[profile_id] = "disconnected"
             self.terminal_input_buffers_by_profile.pop(profile_id, None)
+            self.pending_terminal_directory_probe_commands_by_profile.pop(profile_id, None)
         if update_ui:
             self.refresh_sidebar()
             self.render_selected_profile()
@@ -3695,27 +3708,46 @@ class MainWindow(QMainWindow):
                 widget.moveCursor(QTextCursor.End)
 
     def extract_terminal_directory_updates(self, profile_id: str, text: str) -> str:
-        def update(match: re.Match[str]) -> str:
+        text = self.remove_terminal_directory_probe_echo(profile_id, text)
+
+        def store_and_sync(path: str, trust_shorter_prefix: bool = False) -> None:
+            if not path:
+                return
+            stored_path = self.store_terminal_directory(profile_id, path, trust_shorter_prefix=trust_shorter_prefix)
+            if not stored_path:
+                return
+            profile = self.profile_by_id(profile_id)
+            should_sync = (
+                profile is not None
+                and (
+                    profile.id in self.auto_sync_terminal_directory_profile_ids
+                    or profile.id in self.pending_terminal_directory_sync_profile_ids
+                )
+            )
+            if should_sync:
+                self.pending_terminal_directory_sync_profile_ids.discard(profile.id)
+                QTimer.singleShot(0, lambda selected_profile=profile, selected_path=stored_path: self.refresh_files(selected_profile, selected_path))
+
+        def update_probe(match: re.Match[str]) -> str:
+            self.pending_terminal_directory_probe_commands_by_profile.pop(profile_id, None)
+            store_and_sync(path_from_probe_payload(match.group(1)), trust_shorter_prefix=True)
+            return ""
+
+        def update_osc7(match: re.Match[str]) -> str:
             payload = match.group(1)
             path = self.path_from_osc7_payload(payload)
             if path:
-                stored_path = self.store_terminal_directory(profile_id, path)
-                if not stored_path:
-                    return ""
-                profile = self.profile_by_id(profile_id)
-                should_sync = (
-                    profile is not None
-                    and (
-                        profile.id in self.auto_sync_terminal_directory_profile_ids
-                        or profile.id in self.pending_terminal_directory_sync_profile_ids
-                    )
-                )
-                if should_sync:
-                    self.pending_terminal_directory_sync_profile_ids.discard(profile.id)
-                    QTimer.singleShot(0, lambda selected_profile=profile, selected_path=stored_path: self.refresh_files(selected_profile, selected_path))
+                store_and_sync(path)
             return ""
 
-        return re.sub(r"\x1b]7;([^\x07\x1b]*)(?:\x07|\x1b\\)", update, text)
+        text = DIRECTORY_PROBE_PATTERN.sub(update_probe, text)
+        return OSC7_PATTERN.sub(update_osc7, text)
+
+    def remove_terminal_directory_probe_echo(self, profile_id: str, text: str) -> str:
+        command = self.pending_terminal_directory_probe_commands_by_profile.get(profile_id)
+        if not command:
+            return text
+        return text.replace(command, "", 1)
 
     def strip_terminal_control_sequences(self, text: str) -> str:
         text = re.sub(r"\x1b\][^\x07]*(?:\x07|\x1b\\)", "", text)
@@ -3745,13 +3777,7 @@ class MainWindow(QMainWindow):
         return buffer
 
     def path_from_osc7_payload(self, payload: str) -> str:
-        if payload.startswith("file://"):
-            without_scheme = payload[len("file://"):]
-            slash_index = without_scheme.find("/")
-            if slash_index >= 0:
-                return self.normalize_terminal_directory(urllib.parse.unquote(without_scheme[slash_index:]))
-            return ""
-        return self.normalize_terminal_directory(urllib.parse.unquote(payload))
+        return parsed_path_from_osc7_payload(payload)
 
     def handle_terminal_status(self, profile_id: str, status: str, message: object) -> None:
         self.terminal_status_by_profile[profile_id] = status
@@ -3822,24 +3848,28 @@ class MainWindow(QMainWindow):
         if self.terminal_status_for(profile.id) != "connected":
             QMessageBox.information(self, APP_NAME, "请先连接当前终端。")
             return
-        directory = self.terminal_directories_by_profile.get(profile.id)
-        if directory:
-            self.refresh_files(profile, directory)
-        else:
-            QMessageBox.information(self, APP_NAME, "还没有捕获到终端当前目录。请先在终端里执行一次 cd 命令，或使用支持 OSC 7 的 shell 提示符。")
+        self.sftp_status = "正在读取终端目录"
+        state = self.terminal_file_state(profile.id)
+        state.status = self.sftp_status
+        self.update_file_widgets(profile.id)
+        self.request_terminal_directory(profile, sync_after=True)
 
     def toggle_auto_sync_terminal_directory(self, profile: SSHProfile) -> None:
         if profile.id in self.auto_sync_terminal_directory_profile_ids:
             self.auto_sync_terminal_directory_profile_ids.remove(profile.id)
         else:
             self.auto_sync_terminal_directory_profile_ids.add(profile.id)
-            directory = self.terminal_directories_by_profile.get(profile.id)
-            if directory:
-                self.refresh_files(profile, directory)
+            if self.terminal_status_for(profile.id) == "connected":
+                self.request_terminal_directory(profile, sync_after=True)
         self.render_selected_profile()
 
-    def request_terminal_directory(self) -> None:
-        return
+    def request_terminal_directory(self, profile: SSHProfile, sync_after: bool = False) -> None:
+        if self.terminal_status_for(profile.id) != "connected":
+            return
+        if sync_after:
+            self.pending_terminal_directory_sync_profile_ids.add(profile.id)
+        self.pending_terminal_directory_probe_commands_by_profile[profile.id] = DIRECTORY_PROBE_COMMAND
+        self.send_terminal_text(profile, DIRECTORY_PROBE_COMMAND + "\r", record_input=False)
 
     def record_terminal_input(self, profile_id: str, text: str) -> None:
         buffer = self.terminal_input_buffers_by_profile.get(profile_id, "")
@@ -3893,47 +3923,16 @@ class MainWindow(QMainWindow):
             QTimer.singleShot(0, lambda selected_profile=profile, selected_directory=stored_directory: self.refresh_files(selected_profile, selected_directory))
 
     def directory_after_cd_command(self, profile_id: str, command: str) -> str | None:
-        try:
-            words = shlex.split(command.strip(), posix=True)
-        except ValueError:
-            return None
-        if not words or words[0] != "cd":
-            return None
-        target = self.cd_target_from_words(words)
-        if target == "-":
-            return None
-        return self.resolve_terminal_directory(target, self.terminal_directories_by_profile.get(profile_id))
+        return parsed_directory_after_cd_command(command, self.terminal_directories_by_profile.get(profile_id))
 
     def cd_target_from_words(self, words: list[str]) -> str:
-        parsing_options = True
-        for word in words[1:]:
-            if parsing_options and word == "--":
-                parsing_options = False
-                continue
-            if parsing_options and word in {"-L", "-P", "-e", "-@"}:
-                continue
-            return word
-        return "~"
+        return parsed_cd_target_from_words(words)
 
     def resolve_terminal_directory(self, path: str, base: str | None) -> str:
-        trimmed = path.strip()
-        if not trimmed:
-            return "~"
-        if trimmed == "~" or trimmed.startswith("~/") or trimmed.startswith("/"):
-            return self.normalize_terminal_directory(trimmed)
-        if not base:
-            return trimmed
-        if base == "~":
-            return self.normalize_terminal_directory(f"~/{trimmed}")
-        return self.normalize_terminal_directory(posixpath.join(base, trimmed))
+        return parsed_resolve_terminal_directory(path, base)
 
     def normalize_terminal_directory(self, path: str) -> str:
-        path = path.strip()
-        if path == "~" or path.startswith("~/"):
-            suffix = path[2:] if path.startswith("~/") else ""
-            normalized = posixpath.normpath("/" + suffix).lstrip("/")
-            return "~" if normalized == "." else f"~/{normalized}"
-        return posixpath.normpath(path)
+        return parsed_normalize_terminal_directory(path)
 
     def store_terminal_directory(self, profile_id: str, directory: str, trust_shorter_prefix: bool = False) -> str | None:
         normalized = self.normalize_terminal_directory(directory)
@@ -3946,15 +3945,7 @@ class MainWindow(QMainWindow):
         return normalized
 
     def is_probably_truncated_directory(self, existing: str, candidate: str) -> bool:
-        if not existing or not candidate or existing == candidate:
-            return False
-        if not existing.startswith(candidate):
-            return False
-        if len(existing) <= len(candidate):
-            return False
-        if existing[len(candidate)] == "/":
-            return False
-        return posixpath.dirname(existing) == posixpath.dirname(candidate)
+        return parsed_is_probably_truncated_directory(existing, candidate)
 
     def open_native_terminal(self, profile: SSHProfile) -> None:
         command = subprocess.list2cmdline(["ssh"] + profile.terminal_ssh_args(include_batch_mode=False))

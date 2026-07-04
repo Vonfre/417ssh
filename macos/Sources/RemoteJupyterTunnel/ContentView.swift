@@ -3997,7 +3997,9 @@ private struct RemoteFileBrowserPane: View {
 
     private func requestAndSyncTerminalDirectory() {
         guard let terminalProfileID else { return }
-        syncToTerminalDirectory(terminal.currentDirectory(for: terminalProfileID))
+        terminal.requestCurrentDirectory(profileID: terminalProfileID) { directory in
+            syncToTerminalDirectory(directory)
+        }
     }
 
     private func syncToTerminalDirectory(_ directory: String?) {

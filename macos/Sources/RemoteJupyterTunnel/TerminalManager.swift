@@ -46,6 +46,7 @@ final class TerminalManager: ObservableObject {
     private var sessions: [UUID: RemoteTerminalSession] = [:]
     private var disconnectingProfileIDs: Set<UUID> = []
     private var inputBufferByProfileID: [UUID: [UInt8]] = [:]
+    private var pendingDirectoryCallbacksByProfileID: [UUID: [(String?) -> Void]] = [:]
 
     func connect(profile: SSHProfile) {
         if status(for: profile.id).isRunning, sessions[profile.id] != nil {
@@ -129,6 +130,7 @@ final class TerminalManager: ObservableObject {
         terminalTitleByProfileID.removeAll()
         currentDirectoryByProfileID.removeAll()
         inputBufferByProfileID.removeAll()
+        pendingDirectoryCallbacksByProfileID.removeAll()
         activeProfileID = nil
         status = .disconnected
         terminalTitle = "SSH 终端"
@@ -149,6 +151,7 @@ final class TerminalManager: ObservableObject {
         disconnectingProfileIDs.remove(profileID)
         currentDirectoryByProfileID.removeValue(forKey: profileID)
         inputBufferByProfileID.removeValue(forKey: profileID)
+        pendingDirectoryCallbacksByProfileID.removeValue(forKey: profileID)
         setStatus(.disconnected, for: profileID)
         if updateLegacySelection {
             refreshLegacySelectionAfterProfileRemoval(profileID)
@@ -177,9 +180,26 @@ final class TerminalManager: ObservableObject {
         sessions[profileID]?.view.sendBytes(Array(text.utf8))
     }
 
-    func requestCurrentDirectory(profileID: UUID) {
-        // Current directory is tracked from OSC 7 shell reports and typed `cd` commands.
-        // Avoid injecting a visible `printf ...` probe into the user's interactive shell.
+    func requestCurrentDirectory(profileID: UUID, completion: ((String?) -> Void)? = nil) {
+        guard let view = sessions[profileID]?.view else {
+            completion?(currentDirectoryByProfileID[profileID])
+            return
+        }
+
+        if let completion {
+            pendingDirectoryCallbacksByProfileID[profileID, default: []].append(completion)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
+                guard let self else { return }
+                guard let callbacks = self.pendingDirectoryCallbacksByProfileID.removeValue(forKey: profileID), !callbacks.isEmpty else {
+                    return
+                }
+                let directory = self.currentDirectoryByProfileID[profileID]
+                callbacks.forEach { $0(directory) }
+            }
+        }
+
+        let probe = " printf '\\033]7;file://%s%s\\007' \"${HOSTNAME:-remote}\" \"$PWD\"\r"
+        view.sendBytes(Array(probe.utf8), recordInput: false)
     }
 
     func view(for profileID: UUID) -> RemotePTYTerminalView? {
@@ -283,6 +303,9 @@ final class TerminalManager: ObservableObject {
     private func storeCurrentDirectory(_ directory: String?, for profileID: UUID, trustShorterPrefix: Bool = false) {
         guard let normalized = Self.normalizedTerminalDirectory(directory) else {
             currentDirectoryByProfileID.removeValue(forKey: profileID)
+            if let callbacks = pendingDirectoryCallbacksByProfileID.removeValue(forKey: profileID) {
+                callbacks.forEach { $0(nil) }
+            }
             return
         }
 
@@ -293,6 +316,9 @@ final class TerminalManager: ObservableObject {
         }
 
         currentDirectoryByProfileID[profileID] = normalized
+        if let callbacks = pendingDirectoryCallbacksByProfileID.removeValue(forKey: profileID) {
+            callbacks.forEach { $0(normalized) }
+        }
     }
 
     private static func pathFromFileURLLikeTerminalDirectory(_ value: String) -> String? {
@@ -583,6 +609,7 @@ private struct RemoteTerminalLaunchConfiguration {
 
 final class RemotePTYTerminalView: LocalProcessTerminalView {
     var onInput: ((ArraySlice<UInt8>) -> Void)?
+    private var suppressInputRecording = false
 
     func configureAppearance() {
         wantsLayer = true
@@ -608,13 +635,21 @@ final class RemotePTYTerminalView: LocalProcessTerminalView {
         }
     }
 
-    func sendBytes(_ bytes: [UInt8]) {
+    func sendBytes(_ bytes: [UInt8], recordInput: Bool = true) {
         guard !bytes.isEmpty else { return }
+        if !recordInput {
+            suppressInputRecording = true
+            send(source: self, data: bytes[...])
+            suppressInputRecording = false
+            return
+        }
         send(source: self, data: bytes[...])
     }
 
     override func send(source: TerminalView, data: ArraySlice<UInt8>) {
-        onInput?(data)
+        if !suppressInputRecording {
+            onInput?(data)
+        }
         super.send(source: source, data: data)
     }
 
