@@ -501,7 +501,7 @@ public static class SshCommandParser
             return;
         }
 
-        if (tokens[0].Equals("ssh", StringComparison.OrdinalIgnoreCase))
+        if (IsSshExecutable(tokens[0]))
         {
             tokens.RemoveAt(0);
         }
@@ -516,7 +516,7 @@ public static class SshCommandParser
                 break;
             }
 
-            if (token is "-L" or "-J" or "-p" or "-P" or "-i")
+            if (token is "-L" or "-J" or "-p" or "-P" or "-i" or "-l" or "-o")
             {
                 if (i + 1 >= tokens.Count)
                 {
@@ -547,6 +547,24 @@ public static class SshCommandParser
             if (token.StartsWith("-i", StringComparison.Ordinal) && token.Length > 2)
             {
                 ApplyOption("-i", token[2..], profile);
+                continue;
+            }
+
+            if (token.StartsWith("-l", StringComparison.Ordinal) && token.Length > 2)
+            {
+                ApplyOption("-l", token[2..], profile);
+                continue;
+            }
+
+            if (token.StartsWith("-o", StringComparison.Ordinal) && token.Length > 2)
+            {
+                ApplyOption("-o", token[2..], profile);
+                continue;
+            }
+
+            if (token == "-F" || OptionConsumesNextToken(token))
+            {
+                i++;
                 continue;
             }
 
@@ -590,12 +608,15 @@ public static class SshCommandParser
         switch (option)
         {
             case "-L":
-                var forward = value.Split(':', 3);
-                if (forward.Length == 3)
+                if (TryParseForward(value, out var bindHost, out var localPort, out var remoteHost, out var remotePort))
                 {
-                    if (int.TryParse(forward[0], out var localPort)) profile.localPort = localPort;
-                    profile.remoteHost = HostNames.NormalizeForwardTarget(forward[1]);
-                    if (int.TryParse(forward[2], out var remotePort)) profile.remotePort = remotePort;
+                    profile.localPort = localPort;
+                    profile.remoteHost = HostNames.NormalizeForwardTarget(remoteHost);
+                    profile.remotePort = remotePort;
+                    if (!string.IsNullOrWhiteSpace(bindHost) && !IsLoopbackBindHost(bindHost))
+                    {
+                        profile.allowRemoteLocalPortAccess = true;
+                    }
                 }
                 break;
             case "-J":
@@ -608,55 +629,96 @@ public static class SshCommandParser
             case "-i":
                 profile.identityFile = value;
                 break;
+            case "-l":
+                profile.targetUser = value;
+                break;
+            case "-o":
+                ApplySshOption(value, profile);
+                break;
         }
     }
 
-    private static void ApplyJump(string value, SshProfile profile)
+    private static void ApplySshOption(string value, SshProfile profile)
     {
-        var hostPart = value;
-        var port = 22;
-        var colon = value.LastIndexOf(':');
-        if (colon > -1 && colon < value.Length - 1 && int.TryParse(value[(colon + 1)..], out var parsedPort))
+        var text = value.Trim();
+        if (string.IsNullOrWhiteSpace(text))
         {
-            hostPart = value[..colon];
-            port = parsedPort;
+            return;
         }
 
-        var at = hostPart.IndexOf('@');
-        if (at > -1)
+        string key;
+        string optionValue;
+        var equals = text.IndexOf('=');
+        if (equals >= 0)
         {
-            profile.jumpUser = hostPart[..at];
-            profile.jumpHost = hostPart[(at + 1)..];
+            key = text[..equals];
+            optionValue = text[(equals + 1)..];
         }
         else
         {
-            profile.jumpHost = hostPart;
+            var match = Regex.Match(text, @"^(?<key>\S+)\s+(?<value>.+)$");
+            if (!match.Success)
+            {
+                return;
+            }
+            key = match.Groups["key"].Value;
+            optionValue = match.Groups["value"].Value;
         }
-        profile.jumpPort = port;
+
+        key = key.Trim().ToLowerInvariant();
+        optionValue = optionValue.Trim();
+        switch (key)
+        {
+            case "proxyjump":
+                ApplyJump(optionValue, profile);
+                break;
+            case "user":
+                profile.targetUser = optionValue;
+                break;
+            case "port":
+                if (int.TryParse(optionValue, out var port)) profile.targetPort = port;
+                break;
+            case "identityfile":
+                profile.identityFile = optionValue;
+                break;
+            case "localforward":
+                ApplyOption("-L", NormalizeForwardOption(optionValue), profile);
+                break;
+            case "compression":
+                profile.compressionEnabled = IsTruthySshOption(optionValue);
+                break;
+        }
+    }
+
+    private static string NormalizeForwardOption(string value)
+    {
+        var parts = Split(value);
+        return parts.Count == 2 ? $"{parts[0]}:{parts[1]}" : value;
+    }
+
+    private static bool IsTruthySshOption(string value) =>
+        value.Trim().ToLowerInvariant() is "yes" or "true" or "1" or "on";
+
+    private static void ApplyJump(string value, SshProfile profile)
+    {
+        var firstJump = value.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).FirstOrDefault();
+        if (string.IsNullOrWhiteSpace(firstJump) || firstJump.Equals("none", StringComparison.OrdinalIgnoreCase))
+        {
+            return;
+        }
+
+        var endpoint = ParseEndpoint(firstJump, 22);
+        profile.jumpUser = endpoint.User;
+        profile.jumpHost = endpoint.Host;
+        profile.jumpPort = endpoint.Port ?? 22;
     }
 
     private static void ApplyTarget(string value, SshProfile profile)
     {
-        var hostPart = value;
-        var port = profile.targetPort;
-        var colon = value.LastIndexOf(':');
-        if (colon > -1 && colon < value.Length - 1 && int.TryParse(value[(colon + 1)..], out var parsedPort))
-        {
-            hostPart = value[..colon];
-            port = parsedPort;
-        }
-
-        var at = hostPart.IndexOf('@');
-        if (at > -1)
-        {
-            profile.targetUser = hostPart[..at];
-            profile.targetHost = hostPart[(at + 1)..];
-        }
-        else
-        {
-            profile.targetHost = hostPart;
-        }
-        profile.targetPort = port;
+        var endpoint = ParseEndpoint(value, profile.targetPort);
+        profile.targetUser = endpoint.User;
+        profile.targetHost = endpoint.Host;
+        profile.targetPort = endpoint.Port ?? profile.targetPort;
     }
 
     private static bool LooksLikeHost(string value) =>
@@ -667,20 +729,21 @@ public static class SshCommandParser
         var result = new List<string>();
         var current = new StringBuilder();
         var quote = '\0';
-        var escaping = false;
 
-        foreach (var c in command)
+        for (var i = 0; i < command.Length; i++)
         {
-            if (escaping)
-            {
-                current.Append(c);
-                escaping = false;
-                continue;
-            }
+            var c = command[i];
 
             if (c == '\\')
             {
-                escaping = true;
+                if (i + 1 < command.Length && ShouldEscape(command[i + 1], quote))
+                {
+                    current.Append(command[++i]);
+                }
+                else
+                {
+                    current.Append(c);
+                }
                 continue;
             }
 
@@ -723,6 +786,462 @@ public static class SshCommandParser
 
         return result;
     }
+
+    private static bool IsSshExecutable(string token)
+    {
+        var fileName = Path.GetFileName(token.Trim('"'));
+        return fileName.Equals("ssh", StringComparison.OrdinalIgnoreCase)
+            || fileName.Equals("ssh.exe", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool OptionConsumesNextToken(string token) =>
+        token is "-B" or "-b" or "-c" or "-D" or "-E" or "-e" or "-I" or "-m" or "-O" or "-Q" or "-R" or "-S" or "-W" or "-w";
+
+    private static bool ShouldEscape(char next, char quote)
+    {
+        if (quote == '\'')
+        {
+            return false;
+        }
+
+        if (quote == '"')
+        {
+            return next is '"' or '\\' or '$' or '`' or '\r' or '\n';
+        }
+
+        return char.IsWhiteSpace(next) || next is '\'' or '"' or '\\';
+    }
+
+    private static bool TryParseForward(string value, out string bindHost, out int localPort, out string remoteHost, out int remotePort)
+    {
+        bindHost = "";
+        localPort = 0;
+        remoteHost = "";
+        remotePort = 0;
+
+        var parts = SplitColonAware(value);
+        if (parts.Count == 3)
+        {
+            if (!int.TryParse(parts[0], out localPort) || !int.TryParse(parts[2], out remotePort))
+            {
+                return false;
+            }
+            remoteHost = StripEndpointBrackets(parts[1]);
+            return true;
+        }
+
+        if (parts.Count == 4)
+        {
+            if (!int.TryParse(parts[1], out localPort) || !int.TryParse(parts[3], out remotePort))
+            {
+                return false;
+            }
+            bindHost = StripEndpointBrackets(parts[0]);
+            remoteHost = StripEndpointBrackets(parts[2]);
+            return true;
+        }
+
+        return false;
+    }
+
+    private static List<string> SplitColonAware(string value)
+    {
+        var parts = new List<string>();
+        var current = new StringBuilder();
+        var bracketDepth = 0;
+        foreach (var c in value)
+        {
+            if (c == '[')
+            {
+                bracketDepth++;
+            }
+            else if (c == ']' && bracketDepth > 0)
+            {
+                bracketDepth--;
+            }
+
+            if (c == ':' && bracketDepth == 0)
+            {
+                parts.Add(current.ToString());
+                current.Clear();
+                continue;
+            }
+
+            current.Append(c);
+        }
+        parts.Add(current.ToString());
+        return parts;
+    }
+
+    private static bool IsLoopbackBindHost(string host)
+    {
+        var value = StripEndpointBrackets(host.Trim());
+        if (string.IsNullOrWhiteSpace(value) || value.Equals("localhost", StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+        return IPAddress.TryParse(value, out var address) && IPAddress.IsLoopback(address);
+    }
+
+    private static ParsedEndpoint ParseEndpoint(string value, int? defaultPort)
+    {
+        var endpoint = value.Trim();
+        var user = "";
+        var at = endpoint.LastIndexOf('@');
+        if (at >= 0)
+        {
+            user = endpoint[..at];
+            endpoint = endpoint[(at + 1)..];
+        }
+
+        var host = endpoint;
+        int? port = defaultPort;
+        if (endpoint.StartsWith("[", StringComparison.Ordinal))
+        {
+            var closing = endpoint.IndexOf(']');
+            if (closing >= 0)
+            {
+                host = endpoint[1..closing];
+                if (closing + 2 <= endpoint.Length && endpoint[closing + 1] == ':' && int.TryParse(endpoint[(closing + 2)..], out var parsedPort))
+                {
+                    port = parsedPort;
+                }
+            }
+        }
+        else
+        {
+            var colon = endpoint.LastIndexOf(':');
+            if (colon > -1 && colon < endpoint.Length - 1 && int.TryParse(endpoint[(colon + 1)..], out var parsedPort))
+            {
+                host = endpoint[..colon];
+                port = parsedPort;
+            }
+        }
+
+        return new ParsedEndpoint(user, StripEndpointBrackets(host), port);
+    }
+
+    private static string StripEndpointBrackets(string value)
+    {
+        var trimmed = value.Trim();
+        if (trimmed.Length >= 2 && trimmed[0] == '[' && trimmed[^1] == ']')
+        {
+            return trimmed[1..^1];
+        }
+        return trimmed;
+    }
+
+    private sealed record ParsedEndpoint(string User, string Host, int? Port);
+}
+
+public sealed class SshConfigEntry
+{
+    public string HostName { get; set; } = "";
+    public string User { get; set; } = "";
+    public int? Port { get; set; }
+    public string IdentityFile { get; set; } = "";
+    public string ProxyJump { get; set; } = "";
+    public bool? Compression { get; set; }
+}
+
+public static class SshConfigResolver
+{
+    public static SshProfile ResolveForSshNet(SshProfile profile)
+    {
+        var resolved = profile.Clone();
+        resolved.Normalize();
+        if (!resolved.useSSHConfig || string.IsNullOrWhiteSpace(resolved.targetHost))
+        {
+            return resolved;
+        }
+
+        var lookupHost = resolved.targetHost.Trim();
+        var config = Lookup(lookupHost);
+        if (config is null)
+        {
+            return resolved;
+        }
+
+        if (string.IsNullOrWhiteSpace(resolved.targetUser) && !string.IsNullOrWhiteSpace(config.User))
+        {
+            resolved.targetUser = config.User;
+        }
+
+        if (resolved.targetPort == 22 && config.Port is { } port)
+        {
+            resolved.targetPort = port;
+        }
+
+        if (string.IsNullOrWhiteSpace(resolved.identityFile) && !string.IsNullOrWhiteSpace(config.IdentityFile))
+        {
+            resolved.identityFile = ExpandSshConfigTokens(config.IdentityFile, lookupHost, resolved.TargetUserOrDefault);
+        }
+
+        if (string.IsNullOrWhiteSpace(resolved.jumpHost) && !string.IsNullOrWhiteSpace(config.ProxyJump))
+        {
+            ApplyProxyJump(config.ProxyJump, resolved);
+        }
+
+        if (!string.IsNullOrWhiteSpace(resolved.jumpHost))
+        {
+            ApplyJumpHostConfig(resolved);
+        }
+
+        if (config.Compression is { } compression)
+        {
+            resolved.compressionEnabled = compression;
+        }
+
+        if (!string.IsNullOrWhiteSpace(config.HostName))
+        {
+            resolved.targetHost = ExpandSshConfigTokens(config.HostName, lookupHost, resolved.TargetUserOrDefault);
+        }
+
+        resolved.Normalize();
+        return resolved;
+    }
+
+    private static void ApplyJumpHostConfig(SshProfile profile)
+    {
+        var lookupHost = profile.jumpHost.Trim();
+        var config = Lookup(lookupHost);
+        if (config is null)
+        {
+            return;
+        }
+
+        if (string.IsNullOrWhiteSpace(profile.jumpUser) && !string.IsNullOrWhiteSpace(config.User))
+        {
+            profile.jumpUser = config.User;
+        }
+
+        if (profile.jumpPort == 22 && config.Port is { } port)
+        {
+            profile.jumpPort = port;
+        }
+
+        if (!string.IsNullOrWhiteSpace(config.HostName))
+        {
+            profile.jumpHost = ExpandSshConfigTokens(config.HostName, lookupHost, string.IsNullOrWhiteSpace(profile.jumpUser) ? profile.TargetUserOrDefault : profile.jumpUser);
+        }
+    }
+
+    private static SshConfigEntry? Lookup(string host)
+    {
+        var path = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".ssh", "config");
+        if (!File.Exists(path))
+        {
+            return null;
+        }
+
+        var entry = new SshConfigEntry();
+        var active = true;
+        foreach (var rawLine in File.ReadLines(path))
+        {
+            var line = StripComment(rawLine).Trim();
+            if (string.IsNullOrWhiteSpace(line))
+            {
+                continue;
+            }
+
+            var split = Regex.Match(line, @"^(?<key>\S+)(?:\s+(?<value>.*))?$");
+            if (!split.Success)
+            {
+                continue;
+            }
+
+            var key = split.Groups["key"].Value.ToLowerInvariant();
+            var value = Unquote(split.Groups["value"].Value.Trim());
+            if (key == "host")
+            {
+                active = HostPatternsMatch(value, host);
+                continue;
+            }
+
+            if (!active)
+            {
+                continue;
+            }
+
+            switch (key)
+            {
+                case "hostname" when string.IsNullOrWhiteSpace(entry.HostName):
+                    entry.HostName = value;
+                    break;
+                case "user" when string.IsNullOrWhiteSpace(entry.User):
+                    entry.User = value;
+                    break;
+                case "port" when entry.Port is null && int.TryParse(value, out var port):
+                    entry.Port = port;
+                    break;
+                case "identityfile" when string.IsNullOrWhiteSpace(entry.IdentityFile):
+                    entry.IdentityFile = value;
+                    break;
+                case "proxyjump" when string.IsNullOrWhiteSpace(entry.ProxyJump):
+                    entry.ProxyJump = value;
+                    break;
+                case "compression" when entry.Compression is null:
+                    entry.Compression = value.Equals("yes", StringComparison.OrdinalIgnoreCase)
+                        || value.Equals("true", StringComparison.OrdinalIgnoreCase)
+                        || value.Equals("1", StringComparison.OrdinalIgnoreCase);
+                    break;
+            }
+        }
+
+        return string.IsNullOrWhiteSpace(entry.HostName)
+            && string.IsNullOrWhiteSpace(entry.User)
+            && entry.Port is null
+            && string.IsNullOrWhiteSpace(entry.IdentityFile)
+            && string.IsNullOrWhiteSpace(entry.ProxyJump)
+            && entry.Compression is null
+            ? null
+            : entry;
+    }
+
+    private static string StripComment(string line)
+    {
+        var quote = '\0';
+        for (var i = 0; i < line.Length; i++)
+        {
+            var c = line[i];
+            if (quote != '\0')
+            {
+                if (c == quote)
+                {
+                    quote = '\0';
+                }
+                continue;
+            }
+
+            if (c is '\'' or '"')
+            {
+                quote = c;
+                continue;
+            }
+
+            if (c == '#')
+            {
+                return line[..i];
+            }
+        }
+        return line;
+    }
+
+    private static bool HostPatternsMatch(string patterns, string host)
+    {
+        var anyPositive = false;
+        foreach (var pattern in patterns.Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        {
+            var negated = pattern.StartsWith('!');
+            var text = negated ? pattern[1..] : pattern;
+            if (!WildcardMatch(text, host))
+            {
+                continue;
+            }
+
+            if (negated)
+            {
+                return false;
+            }
+            anyPositive = true;
+        }
+        return anyPositive;
+    }
+
+    private static bool WildcardMatch(string pattern, string value)
+    {
+        var regex = "^" + Regex.Escape(pattern)
+            .Replace("\\*", ".*", StringComparison.Ordinal)
+            .Replace("\\?", ".", StringComparison.Ordinal) + "$";
+        return Regex.IsMatch(value, regex, RegexOptions.IgnoreCase);
+    }
+
+    private static string Unquote(string value)
+    {
+        if (value.Length >= 2 && ((value[0] == '"' && value[^1] == '"') || (value[0] == '\'' && value[^1] == '\'')))
+        {
+            return value[1..^1];
+        }
+        return value;
+    }
+
+    private static string ExpandSshConfigTokens(string value, string host, string user)
+    {
+        var home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+        var expanded = Environment.ExpandEnvironmentVariables(value.Trim());
+        if (expanded.StartsWith("~", StringComparison.Ordinal))
+        {
+            expanded = Path.Combine(home, expanded[1..].TrimStart('\\', '/'));
+        }
+        return expanded
+            .Replace("%d", home, StringComparison.Ordinal)
+            .Replace("%h", host, StringComparison.Ordinal)
+            .Replace("%r", user, StringComparison.Ordinal);
+    }
+
+    private static void ApplyProxyJump(string value, SshProfile profile)
+    {
+        var first = value.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).FirstOrDefault();
+        if (string.IsNullOrWhiteSpace(first) || first.Equals("none", StringComparison.OrdinalIgnoreCase))
+        {
+            return;
+        }
+
+        var endpoint = ParseEndpoint(first, 22);
+        profile.jumpUser = endpoint.User;
+        profile.jumpHost = endpoint.Host;
+        profile.jumpPort = endpoint.Port ?? 22;
+    }
+
+    private static ParsedEndpoint ParseEndpoint(string value, int? defaultPort)
+    {
+        var endpoint = value.Trim();
+        var user = "";
+        var at = endpoint.LastIndexOf('@');
+        if (at >= 0)
+        {
+            user = endpoint[..at];
+            endpoint = endpoint[(at + 1)..];
+        }
+
+        var host = endpoint;
+        int? port = defaultPort;
+        if (endpoint.StartsWith("[", StringComparison.Ordinal))
+        {
+            var closing = endpoint.IndexOf(']');
+            if (closing >= 0)
+            {
+                host = endpoint[1..closing];
+                if (closing + 2 <= endpoint.Length && endpoint[closing + 1] == ':' && int.TryParse(endpoint[(closing + 2)..], out var parsedPort))
+                {
+                    port = parsedPort;
+                }
+            }
+        }
+        else
+        {
+            var colon = endpoint.LastIndexOf(':');
+            if (colon > -1 && colon < endpoint.Length - 1 && int.TryParse(endpoint[(colon + 1)..], out var parsedPort))
+            {
+                host = endpoint[..colon];
+                port = parsedPort;
+            }
+        }
+
+        return new ParsedEndpoint(user, StripEndpointBrackets(host), port);
+    }
+
+    private static string StripEndpointBrackets(string value)
+    {
+        var trimmed = value.Trim();
+        if (trimmed.Length >= 2 && trimmed[0] == '[' && trimmed[^1] == ']')
+        {
+            return trimmed[1..^1];
+        }
+        return trimmed;
+    }
+
+    private sealed record ParsedEndpoint(string User, string Host, int? Port);
 }
 
 public sealed class SshConnectionContext : IDisposable
@@ -755,26 +1274,26 @@ public static class SshConnectionFactory
 {
     public static SshConnectionContext CreateContext(SshProfile profile)
     {
-        profile.Normalize();
-        HostNames.EnsureConnectTarget(profile.targetHost, "目标主机");
+        var resolved = SshConfigResolver.ResolveForSshNet(profile);
+        HostNames.EnsureConnectTarget(resolved.targetHost, "目标主机");
 
-        if (!profile.HasJumpHost)
+        if (!resolved.HasJumpHost)
         {
-            return new SshConnectionContext(BuildConnectionInfo(profile.targetHost, profile.targetPort, profile.TargetUserOrDefault, profile));
+            return new SshConnectionContext(BuildConnectionInfo(resolved.targetHost, resolved.targetPort, resolved.TargetUserOrDefault, resolved));
         }
 
-        HostNames.EnsureConnectTarget(profile.jumpHost, "跳板主机");
-        var jumpUser = string.IsNullOrWhiteSpace(profile.jumpUser) ? profile.TargetUserOrDefault : profile.jumpUser.Trim();
-        var jumpInfo = BuildConnectionInfo(profile.jumpHost, profile.jumpPort, jumpUser, profile);
+        HostNames.EnsureConnectTarget(resolved.jumpHost, "跳板主机");
+        var jumpUser = string.IsNullOrWhiteSpace(resolved.jumpUser) ? resolved.TargetUserOrDefault : resolved.jumpUser.Trim();
+        var jumpInfo = BuildConnectionInfo(resolved.jumpHost, resolved.jumpPort, jumpUser, resolved);
         var jumpClient = new SshClient(jumpInfo);
         jumpClient.Connect();
 
         var localPort = GetFreeTcpPort();
-        var forward = new ForwardedPortLocal("127.0.0.1", (uint)localPort, profile.targetHost.Trim(), (uint)profile.targetPort);
+        var forward = new ForwardedPortLocal("127.0.0.1", (uint)localPort, resolved.targetHost.Trim(), (uint)resolved.targetPort);
         jumpClient.AddForwardedPort(forward);
         forward.Start();
 
-        var targetInfo = BuildConnectionInfo("127.0.0.1", localPort, profile.TargetUserOrDefault, profile);
+        var targetInfo = BuildConnectionInfo("127.0.0.1", localPort, resolved.TargetUserOrDefault, resolved);
         return new SshConnectionContext(targetInfo, jumpClient, forward);
     }
 
@@ -798,27 +1317,23 @@ public static class SshConnectionFactory
     {
         HostNames.EnsureConnectTarget(host, "连接主机");
         var methods = new List<AuthenticationMethod>();
-        var identityFile = Environment.ExpandEnvironmentVariables(profile.identityFile.Trim());
-        if (identityFile.StartsWith("~", StringComparison.Ordinal))
+        foreach (var identityFile in CandidateIdentityFiles(profile))
         {
-            identityFile = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), identityFile[1..].TrimStart('\\', '/'));
-        }
-
-        if (!string.IsNullOrWhiteSpace(identityFile) && File.Exists(identityFile))
-        {
-            try
-            {
-                methods.Add(new PrivateKeyAuthenticationMethod(user, new PrivateKeyFile(identityFile)));
-            }
-            catch
-            {
-                // Fall back to password if the key cannot be loaded.
-            }
+            TryAddPrivateKey(methods, user, identityFile, profile.sshPassword);
         }
 
         if (!string.IsNullOrEmpty(profile.sshPassword))
         {
             methods.Add(new PasswordAuthenticationMethod(user, profile.sshPassword));
+            var keyboard = new KeyboardInteractiveAuthenticationMethod(user);
+            keyboard.AuthenticationPrompt += (_, e) =>
+            {
+                foreach (var prompt in e.Prompts)
+                {
+                    prompt.Response = profile.sshPassword;
+                }
+            };
+            methods.Add(keyboard);
         }
 
         if (methods.Count == 0)
@@ -830,6 +1345,65 @@ public static class SshConnectionFactory
         {
             Timeout = TimeSpan.FromSeconds(20)
         };
+    }
+
+    private static IEnumerable<string> CandidateIdentityFiles(SshProfile profile)
+    {
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var explicitIdentity = ExpandUserPath(profile.identityFile);
+        if (!string.IsNullOrWhiteSpace(explicitIdentity))
+        {
+            if (File.Exists(explicitIdentity) && seen.Add(explicitIdentity))
+            {
+                yield return explicitIdentity;
+            }
+            yield break;
+        }
+
+        var sshDirectory = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".ssh");
+        foreach (var name in new[] { "id_ed25519", "id_ecdsa", "id_rsa" })
+        {
+            var path = Path.Combine(sshDirectory, name);
+            if (File.Exists(path) && seen.Add(path))
+            {
+                yield return path;
+            }
+        }
+    }
+
+    private static void TryAddPrivateKey(List<AuthenticationMethod> methods, string user, string path, string password)
+    {
+        try
+        {
+            var key = string.IsNullOrEmpty(password)
+                ? new PrivateKeyFile(path)
+                : new PrivateKeyFile(path, password);
+            methods.Add(new PrivateKeyAuthenticationMethod(user, key));
+        }
+        catch
+        {
+            if (!string.IsNullOrEmpty(password))
+            {
+                try
+                {
+                    methods.Add(new PrivateKeyAuthenticationMethod(user, new PrivateKeyFile(path)));
+                }
+                catch
+                {
+                    // Ignore unreadable keys and continue with other authentication methods.
+                }
+            }
+        }
+    }
+
+    private static string ExpandUserPath(string path)
+    {
+        var value = Environment.ExpandEnvironmentVariables((path ?? "").Trim());
+        if (value.StartsWith("~", StringComparison.Ordinal))
+        {
+            return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), value[1..].TrimStart('\\', '/'));
+        }
+        return value;
     }
 
     private static int GetFreeTcpPort()
